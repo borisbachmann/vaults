@@ -1,0 +1,10 @@
+.venv/
+data/baserow_jwt.txt
+data/baserow_token.txt
+data/baserow_id.txt
+data/nsp_vault/
+archive/
+__pycache__/
+*.pyc
+.DS_Store
+.claude/settings.local.json
