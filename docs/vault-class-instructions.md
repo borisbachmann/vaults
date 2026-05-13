@@ -64,7 +64,7 @@ The Vault is a **read-only snapshot**. It is not a live connection to files on d
 
 All factory methods return a `Vault` instance with a derived schema. None require a schema as input (except `from_schema`).
 
-### `Vault.from_vault(path, data_folder="data", bases_folder="bases", relationship_pairs=None, dangling_links="keep")`
+### `Vault.from_vault(path, data_folder="data", bases_folder="bases", relationship_pairs=None, dangling_links="keep", dangling_types="keep")`
 
 Load an existing Obsidian vault from disk.
 
@@ -91,6 +91,16 @@ Dangling links are wikilinks whose target file does not exist on disk. They are 
 | `"keep"` (default) | Load the raw wikilink as-is. `lint()` will flag it as an orphaned link. |
 | `"drop"` | Remove the dangling reference from the loaded record silently. |
 | `"stub"` | Create a minimal record stub (name only, no other fields) for the missing file, if the target type is known from the schema. Useful when referential integrity matters for graph/DB output. |
+
+**Dangling type handling** (`dangling_types` parameter): wikilinks whose target folder does not exist as a type in the vault at all.
+
+| Value | Behaviour |
+|---|---|
+| `"keep"` (default) | Leave the wikilink as-is. |
+| `"drop"` | Remove the wikilink from the field value. |
+| `"stub"` | Create a stub `TypeSchema` (empty fields) and a stub `Record` for each referenced name. The stub type is added to the schema and to `vault.records`. |
+
+**Nested file handling**: files found in subfolders within a type folder are ignored by the loader but flagged with a `logging.warning` so the caller is not silently losing data.
 
 ### `Vault.from_db(db_path, relationship_pairs=None)`
 

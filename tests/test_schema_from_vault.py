@@ -35,7 +35,7 @@ def test_custom_folder_names():
 
 def test_projekte_field_names(schema):
     names = {f.name for f in schema.types["Projekte"].fields}
-    assert {"Titel", "Beginn", "Abgeschlossen", "Budget", "Traeger", "Staedte", "full_text"} <= names
+    assert {"Titel", "Beginn", "Abgeschlossen", "Budget", "Traeger", "Staedte", "Erstellt", "full_text"} <= names
 
 
 def test_projekte_titel_is_string(schema):
@@ -46,6 +46,11 @@ def test_projekte_titel_is_string(schema):
 def test_projekte_beginn_is_date(schema):
     f = _field(schema, "Projekte", "Beginn")
     assert f.type == FieldType.DATE
+
+
+def test_projekte_erstellt_is_datetime(schema):
+    f = _field(schema, "Projekte", "Erstellt")
+    assert f.type == FieldType.DATETIME
 
 
 def test_projekte_abgeschlossen_is_boolean(schema):

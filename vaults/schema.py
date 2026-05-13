@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import json
 import re
 from collections import defaultdict
@@ -16,6 +17,7 @@ class FieldType(str, Enum):
     NUMBER = "number"
     BOOLEAN = "boolean"
     DATE = "date"
+    DATETIME = "datetime"
     LINK = "link"
     LIST_STRINGS = "list[string]"
     LIST_LINKS = "list[link]"
@@ -24,7 +26,6 @@ class FieldType(str, Enum):
 
 
 _WIKILINK_RE = re.compile(r"^\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]$")
-_DATE_RE = re.compile(r"^\d{4}-\d{2}(-\d{2})?$")
 
 
 def _is_wikilink(value: str) -> bool:
@@ -47,6 +48,11 @@ def infer_field_type(values: list) -> FieldType:
         return FieldType.BOOLEAN
     if all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in non_null):
         return FieldType.NUMBER
+    # datetime before date — datetime.datetime is a subclass of datetime.date
+    if all(isinstance(v, datetime.datetime) for v in non_null):
+        return FieldType.DATETIME
+    if all(isinstance(v, datetime.date) and not isinstance(v, datetime.datetime) for v in non_null):
+        return FieldType.DATE
     if all(isinstance(v, list) for v in non_null):
         flat = [item for sub in non_null for item in sub if item is not None and item != ""]
         if not flat:
@@ -59,8 +65,6 @@ def infer_field_type(values: list) -> FieldType:
     if all(isinstance(v, str) for v in non_null):
         if all(_is_wikilink(v) for v in non_null):
             return FieldType.LINK
-        if all(_DATE_RE.match(v) for v in non_null):
-            return FieldType.DATE
         return FieldType.STRING
     return FieldType.UNKNOWN
 

@@ -1,4 +1,5 @@
 """Tests for field type inference helpers (Step 2)."""
+import datetime
 import pytest
 from vaults import FieldType, infer_field_type, infer_link_target
 
@@ -23,12 +24,26 @@ def test_number_float():
     assert infer_field_type([1.0, 2.5]) == FieldType.NUMBER
 
 
-def test_date_year_month():
-    assert infer_field_type(["2021-06", "2023-12"]) == FieldType.DATE
+def test_date_string_stays_string():
+    # Quoted date strings in YAML are strings — no pattern inference
+    assert infer_field_type(["2021-06", "2023-12"]) == FieldType.STRING
+    assert infer_field_type(["2008-05-07", "2021-01-01"]) == FieldType.STRING
+    assert infer_field_type(["2026-03-01T12:59:00"]) == FieldType.STRING
 
 
-def test_date_full():
-    assert infer_field_type(["2008-05-07", "2021-01-01"]) == FieldType.DATE
+def test_date_native_python_type():
+    # Unquoted YAML dates → datetime.date → DATE
+    assert infer_field_type([datetime.date(2021, 3, 1), datetime.date(2022, 7, 15)]) == FieldType.DATE
+
+
+def test_datetime_native_python_type():
+    # Unquoted YAML datetimes → datetime.datetime → DATETIME
+    assert infer_field_type([datetime.datetime(2021, 3, 1, 9, 0, 0)]) == FieldType.DATETIME
+
+
+def test_datetime_not_confused_with_date():
+    # datetime.datetime is a subclass of datetime.date — must check datetime first
+    assert infer_field_type([datetime.datetime(2021, 3, 1, 9, 0, 0)]) != FieldType.DATE
 
 
 def test_string():
@@ -66,7 +81,7 @@ def test_unknown_empty():
 
 def test_null_values_ignored():
     # nulls should not affect the inferred type
-    assert infer_field_type([None, "", "2021-06", "2023-12"]) == FieldType.DATE
+    assert infer_field_type([None, "", datetime.date(2021, 6, 1), datetime.date(2023, 12, 31)]) == FieldType.DATE
 
 
 def test_empty_lists_ignored():

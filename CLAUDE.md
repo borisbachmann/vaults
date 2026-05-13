@@ -9,7 +9,7 @@ A Python package centered on two classes — `Schema` and `Vault` — that treat
 ## Directory layout
 
 - `vaults/` — the Python package source (`Schema` and `Vault` classes)
-- `data/nsp_vault/` — the test vault (primary test fixture; gitignored)
+- `data/nsp_vault/` — a static copy of the test vault used as a pytest fixture (gitignored); not the live vault
 - `data/` — API credentials for Baserow (gitignored)
 - `docs/` — design documentation
 - `archive/` — legacy scripts and config
