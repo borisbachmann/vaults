@@ -16,6 +16,20 @@ logger = logging.getLogger(__name__)
 _WIKILINK_RE = re.compile(r"^\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]$")
 _VALID_DANGLING_REFS = ("drop", "stub")
 
+# FieldType → DuckDB column type (LINK and LIST_LINKS produce join tables, not columns)
+_FIELD_TO_DB_TYPE: dict[FieldType, str] = {
+    FieldType.STRING: "VARCHAR",
+    FieldType.NUMBER: "DOUBLE",      # refined per-field to BIGINT if all-int
+    FieldType.BOOLEAN: "BOOLEAN",
+    FieldType.DATE: "DATE",
+    FieldType.DATETIME: "TIMESTAMP",
+    FieldType.LIST_STRINGS: "VARCHAR[]",
+    FieldType.LIST_MIXED: "VARCHAR[]",
+    FieldType.UNKNOWN: "VARCHAR",
+}
+
+_LINK_TYPES = (FieldType.LINK, FieldType.LIST_LINKS)
+
 
 def _parse_wikilink(value: str) -> Optional[tuple[str, str]]:
     """Return (folder, name) from a wikilink, or None if not a wikilink or has no folder prefix."""
@@ -32,6 +46,23 @@ def _compute_fingerprint(data_root: Path) -> str:
         h.update(str(p.relative_to(data_root)).encode())
         h.update(p.read_bytes())
     return h.hexdigest()
+
+
+def _numeric_db_type(values: list[Any]) -> str:
+    non_null = [v for v in values if v is not None]
+    if not non_null or all(isinstance(v, int) and not isinstance(v, bool) for v in non_null):
+        return "BIGINT"
+    return "DOUBLE"
+
+
+def _coerce_for_db(value: Any, ft: FieldType) -> Any:
+    if value is None:
+        return None
+    if ft == FieldType.LIST_MIXED:
+        return [str(item) if item is not None else "" for item in value] if isinstance(value, list) else [str(value)]
+    if ft == FieldType.UNKNOWN:
+        return str(value)
+    return value
 
 
 def _apply_dangling_refs(
@@ -190,3 +221,108 @@ class Vault:
             relationship_pairs=relationship_pairs or [],
             fingerprint=_compute_fingerprint(data_root),
         )
+
+    def to_db(self):
+        """Return a read-only DuckDB in-memory connection with the vault loaded as tables and views."""
+        import duckdb
+
+        con = duckdb.connect()
+
+        # Build pair lookup: (type_name, field_name) -> (base_table_name, is_primary)
+        pair_lookup: dict[tuple[str, str], tuple[str, bool]] = {}
+        for first, second in self.relationship_pairs:
+            type_a, field_a = first.split(".", 1)
+            type_b, field_b = second.split(".", 1)
+            base = f"{type_a}__{field_a}"
+            pair_lookup[(type_a, field_a)] = (base, True)
+            pair_lookup[(type_b, field_b)] = (base, False)
+
+        # Accumulate join table rows before creating tables (pairs merge two fields)
+        join_rows: dict[str, list[tuple[str, str]]] = {}
+
+        for type_name, type_schema in self.schema.types.items():
+            recs = self.records.get(type_name, [])
+
+            scalar_fields = [f for f in type_schema.fields if f.type not in _LINK_TYPES]
+
+            # Pre-collect values per field for numeric refinement
+            field_values: dict[str, list[Any]] = {f.name: [] for f in scalar_fields}
+            for rec in recs:
+                for f in scalar_fields:
+                    field_values[f.name].append(rec.fields.get(f.name))
+
+            # Build DDL for main type table
+            col_defs = ["record VARCHAR PRIMARY KEY"]
+            for f in scalar_fields:
+                if f.type == FieldType.NUMBER:
+                    db_type = _numeric_db_type(field_values[f.name])
+                else:
+                    db_type = _FIELD_TO_DB_TYPE.get(f.type, "VARCHAR")
+                col_defs.append(f'"{f.name}" {db_type}')
+
+            con.execute(f'CREATE TABLE "{type_name}" ({", ".join(col_defs)})')
+
+            # Populate main table
+            if recs:
+                placeholders = ", ".join(["?"] * (1 + len(scalar_fields)))
+                insert_sql = f'INSERT INTO "{type_name}" VALUES ({placeholders})'
+                rows = []
+                for rec in recs:
+                    row: list[Any] = [rec.name]
+                    for f in scalar_fields:
+                        row.append(_coerce_for_db(rec.fields.get(f.name), f.type))
+                    rows.append(row)
+                con.executemany(insert_sql, rows)
+
+            # Collect join table rows for link fields
+            for f in type_schema.fields:
+                if f.type not in _LINK_TYPES:
+                    continue
+                pair_info = pair_lookup.get((type_name, f.name))
+                table_name = pair_info[0] if pair_info else f"{type_name}__{f.name}"
+                is_primary = pair_info[1] if pair_info else True
+
+                if table_name not in join_rows:
+                    join_rows[table_name] = []
+
+                for rec in recs:
+                    value = rec.fields.get(f.name)
+                    if value is None:
+                        continue
+                    targets: list[str] = []
+                    if isinstance(value, str):
+                        parsed = _parse_wikilink(value)
+                        if parsed:
+                            targets.append(parsed[1])
+                    elif isinstance(value, list):
+                        for item in value:
+                            if isinstance(item, str):
+                                parsed = _parse_wikilink(item)
+                                if parsed:
+                                    targets.append(parsed[1])
+                    for target in targets:
+                        row_pair = (rec.name, target) if is_primary else (target, rec.name)
+                        join_rows[table_name].append(row_pair)
+
+        # Create join tables (dedup rows via set — composite PK collapses duplicates from both pair sides)
+        for table_name, rows in join_rows.items():
+            con.execute(
+                f'CREATE TABLE "{table_name}" '
+                f'(source VARCHAR, target VARCHAR, PRIMARY KEY (source, target))'
+            )
+            unique = list({(s, t) for s, t in rows})
+            if unique:
+                con.executemany(f'INSERT INTO "{table_name}" VALUES (?, ?)', unique)
+
+        # Create reverse views for secondary fields in relationship pairs
+        for first, second in self.relationship_pairs:
+            type_a, field_a = first.split(".", 1)
+            type_b, field_b = second.split(".", 1)
+            base = f"{type_a}__{field_a}"
+            view = f"{type_b}__{field_b}"
+            con.execute(
+                f'CREATE VIEW "{view}" AS '
+                f'SELECT target AS source, source AS target FROM "{base}"'
+            )
+
+        return con

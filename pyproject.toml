@@ -9,10 +9,11 @@ requires-python = ">=3.11"
 dependencies = [
     "python-frontmatter",
     "pyyaml",
+    "lark",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest", "duckdb", "pandas", "numpy"]
 
 [tool.setuptools.packages.find]
 where = ["."]
