@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 import frontmatter
+import yaml
 
 
 class FieldType(str, Enum):
@@ -23,6 +24,7 @@ class FieldType(str, Enum):
     LIST_LINKS = "list[link]"
     LIST_MIXED = "list[mixed]"
     UNKNOWN = "unknown"
+    FORMULA = "formula"
 
 
 _WIKILINK_RE = re.compile(r"^\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]$")
@@ -87,12 +89,36 @@ class FieldSchema:
     name: str
     type: FieldType
     link_target: Optional[str] = None
+    formula: Optional[str] = None
+    output_type: Optional[FieldType] = None
 
 
 @dataclass
 class TypeSchema:
     name: str
     fields: list[FieldSchema] = field(default_factory=list)
+    base_filter: Optional[str] = None
+
+
+def _serialize_filter(filters) -> Optional[str]:
+    if not filters:
+        return None
+    if isinstance(filters, str):
+        return filters
+    if isinstance(filters, list):
+        parts = [str(e) for e in filters if e]
+        return " and ".join(parts) if parts else None
+    if isinstance(filters, dict):
+        for op in ("and", "or"):
+            if op in filters:
+                items = filters[op]
+                if isinstance(items, list):
+                    parts = [str(e) for e in items if e]
+                    if len(parts) == 1:
+                        return parts[0]
+                    return f" {op} ".join(parts)
+                return str(items)
+    return None
 
 
 @dataclass
@@ -140,6 +166,20 @@ class Schema:
 
             schema.types[type_dir.name] = TypeSchema(name=type_dir.name, fields=fields)
 
+        bases_root = Path(path) / bases_folder
+        for type_name, type_schema in schema.types.items():
+            base_file = bases_root / f"{type_name}.base"
+            if not base_file.exists():
+                continue
+            data = yaml.safe_load(base_file.read_text(encoding="utf-8")) or {}
+            for formula_name, expr in (data.get("formulas") or {}).items():
+                type_schema.fields.append(
+                    FieldSchema(name=formula_name, type=FieldType.FORMULA, formula=str(expr))
+                )
+            raw_filter = data.get("filters")
+            if raw_filter:
+                type_schema.base_filter = _serialize_filter(raw_filter)
+
         return schema
 
     def diff(self, other: "Schema") -> dict:
@@ -174,10 +214,19 @@ class Schema:
             "data_folder": self.data_folder,
             "bases_folder": self.bases_folder,
             "types": {
-                type_name: [
-                    {"name": f.name, "type": f.type.value, "link_target": f.link_target}
-                    for f in type_schema.fields
-                ]
+                type_name: {
+                    "base_filter": type_schema.base_filter,
+                    "fields": [
+                        {
+                            "name": f.name,
+                            "type": f.type.value,
+                            "link_target": f.link_target,
+                            "formula": f.formula,
+                            "output_type": f.output_type.value if f.output_type else None,
+                        }
+                        for f in type_schema.fields
+                    ],
+                }
                 for type_name, type_schema in self.types.items()
             },
         }
@@ -190,14 +239,23 @@ class Schema:
             data_folder=payload.get("data_folder", "data"),
             bases_folder=payload.get("bases_folder", "bases"),
         )
-        for type_name, fields_data in payload.get("types", {}).items():
+        for type_name, type_data in payload.get("types", {}).items():
+            # Support both old format (list of fields) and new format (dict with fields + base_filter)
+            if isinstance(type_data, list):
+                fields_data = type_data
+                base_filter = None
+            else:
+                fields_data = type_data.get("fields", [])
+                base_filter = type_data.get("base_filter")
             fields = [
                 FieldSchema(
                     name=f["name"],
                     type=FieldType(f["type"]),
                     link_target=f.get("link_target"),
+                    formula=f.get("formula"),
+                    output_type=FieldType(f["output_type"]) if f.get("output_type") else None,
                 )
                 for f in fields_data
             ]
-            schema.types[type_name] = TypeSchema(name=type_name, fields=fields)
+            schema.types[type_name] = TypeSchema(name=type_name, fields=fields, base_filter=base_filter)
         return schema

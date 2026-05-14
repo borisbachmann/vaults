@@ -61,8 +61,9 @@ def test_json_structure(derived_schema, tmp_path):
     assert "types" in raw
     assert isinstance(raw["types"], dict)
     first_type = next(iter(raw["types"].values()))
-    assert isinstance(first_type, list)
-    assert all("name" in f and "type" in f for f in first_type)
+    assert isinstance(first_type, dict)
+    assert "fields" in first_type
+    assert all("name" in f and "type" in f for f in first_type["fields"])
 
 
 def test_json_unicode_preserved(tmp_path):

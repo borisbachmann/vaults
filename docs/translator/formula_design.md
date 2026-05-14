@@ -1,5 +1,39 @@
 # Bases Integration & FormulaTranslator — Design Instructions
 
+## Implementation Status
+
+### Done
+- [x] `vaults/formula/` package split into four submodules:
+  - `context.py` — `EvalContext` dataclass (isolated to avoid circular imports with `vault.py`)
+  - `grammar.py` — LALR grammar string and `_parser` singleton
+  - `runtime.py` — namespace proxies (`_FileProxy`, `_NoteProxy`, `_ThisProxy`), safe operators, method/global dispatch tables
+  - `compiler.py` — `BasesCompiler` class with `translate()`, `translate_filter()`, full `_compile` dispatch
+- [x] Grammar covers full Bases expression syntax (operators, literals, method chains, regex, implicit lambda vars)
+- [x] `BasesCompiler.translate()` — returns `(EvalContext) -> Any` callable; attaches `translation_error` on failure
+- [x] `BasesCompiler.translate_filter()` — bool-coercing wrapper, preserves `translation_error`
+- [x] Implicit variable scoping (`value`, `index`, `acc`) for `filter()`, `map()`, `reduce()`
+- [x] All Bases method and global function dispatch (string, number, list, date, regex, object, link)
+- [x] Thread-safe compilation (`errors` list passed as parameter, no instance state)
+- [x] `_c_neg` single-evaluation fix
+
+### Next: Schema integration (Section 1)
+- [ ] Add `FieldType.FORMULA = "formula"` to `schema.py`
+- [ ] Add `formula: Optional[str]` and `output_type: Optional[FieldType]` to `FieldSchema`
+- [ ] Add `base_filter: Optional[str]` to `TypeSchema`
+- [ ] `Schema.from_vault()` — after frontmatter pass, read each `bases/{type_name}.base` YAML file; extract `formulas:` block (append `FieldSchema(type=FORMULA, formula=...)`) and `filters:` block (set `TypeSchema.base_filter`)
+
+### Then: Evaluation pass (Section 4)
+- [ ] In `Vault.from_vault()`, after loading all records: topological sort of formula fields per type (detect `formula.X` dependencies); evaluate in order using `BasesCompiler`; materialize results into `Record.fields`; infer `FieldSchema.output_type` from result values
+- [ ] Detect and report cyclic formula dependencies (evaluate to `None`, surface via lint)
+- [ ] Optional `apply_base_filters=True` parameter — translate `TypeSchema.base_filter` and drop non-matching records
+
+### Then: Lint checks (Section 5)
+- [ ] Untranslatable formula (`translation_error` attribute present) → error
+- [ ] Cyclic formula dependency → error
+- [ ] `note.X` referencing unknown field → warning
+- [ ] Formula output type inconsistent across records → warning
+- [ ] Missing `.base` file for a type → error
+
 ## Overview
 
 Obsidian Bases define computed fields (formulas) and filters per type. These live in `.base` files under `bases/`, one per type, and are part of the vault's source of truth alongside frontmatter. The goal is to:

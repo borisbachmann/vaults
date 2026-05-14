@@ -1,0 +1,6 @@
+formulas:
+  BudgetLabel: '"Budget: " + Budget.toString()'
+  Jahr: Beginn.year
+filters:
+  and:
+    - file.inFolder("data/Projekte")

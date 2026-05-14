@@ -177,3 +177,17 @@ def test_pair_view_swaps_source_and_target(con_pairs):
     base = {(r[0], r[1]) for r in con_pairs.execute('SELECT source, target FROM "Projekte__Traeger"').fetchall()}
     view = {(r[0], r[1]) for r in con_pairs.execute('SELECT source, target FROM "Personen__Projekte"').fetchall()}
     assert view == {(t, s) for s, t in base}
+
+
+# --- formula fields ---
+
+def test_formula_year_column_is_bigint(con):
+    """Jahr formula (Beginn.year) extracts an integer → BIGINT column."""
+    assert _col_types(con, "Projekte")["Jahr"] == "BIGINT"
+
+
+def test_formula_year_values(con):
+    """Extracted year matches the Beginn date field for each record."""
+    rows = {r[0]: r[1] for r in con.execute('SELECT record, "Jahr" FROM "Projekte"').fetchall()}
+    assert rows["Alpha"] == 2021
+    assert rows["Beta"] == 2022
