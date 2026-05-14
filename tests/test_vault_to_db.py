@@ -158,25 +158,25 @@ def test_drop_excludes_dangling_links(con_drop):
 
 # --- relationship pairs ---
 
-def test_pair_creates_only_one_base_table(con_pairs):
+def test_pair_both_sides_have_join_tables(con_pairs):
     tables = {r[0] for r in con_pairs.execute(
         "SELECT table_name FROM information_schema.tables WHERE table_type='BASE TABLE'"
     ).fetchall()}
     assert "Projekte__Traeger" in tables
-    assert "Personen__Projekte" not in tables
+    assert "Personen__Projekte" in tables
 
 
-def test_pair_creates_reverse_view(con_pairs):
+def test_pair_no_view_created(con_pairs):
     views = {r[0] for r in con_pairs.execute(
         "SELECT table_name FROM information_schema.tables WHERE table_type='VIEW'"
     ).fetchall()}
-    assert "Personen__Projekte" in views
+    assert "Personen__Projekte" not in views
 
 
-def test_pair_view_swaps_source_and_target(con_pairs):
+def test_pair_secondary_table_is_inverse(con_pairs):
     base = {(r[0], r[1]) for r in con_pairs.execute('SELECT source, target FROM "Projekte__Traeger"').fetchall()}
-    view = {(r[0], r[1]) for r in con_pairs.execute('SELECT source, target FROM "Personen__Projekte"').fetchall()}
-    assert view == {(t, s) for s, t in base}
+    secondary = {(r[0], r[1]) for r in con_pairs.execute('SELECT source, target FROM "Personen__Projekte"').fetchall()}
+    assert secondary == {(t, s) for s, t in base}
 
 
 # --- formula fields ---
