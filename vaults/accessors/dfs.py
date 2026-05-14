@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator, KeysView, Optional
@@ -9,8 +8,9 @@ from typing import TYPE_CHECKING, Any, Iterator, KeysView, Optional
 import pyarrow as pa
 import yaml
 
-from ..formula import BasesCompiler, EvalContext
+from ..syntax import BasesCompiler, EvalContext
 from ..schema import FieldSchema, FieldType, _serialize_filter
+from ..links import parse_wikilink_name
 
 if TYPE_CHECKING:
     from ..vault import Vault
@@ -36,7 +36,6 @@ _FIELD_TO_ARROW: dict[FieldType, pa.DataType] = {
     FieldType.FORMULA:      pa.string(),  # fallback; overridden via output_type
 }
 
-_LINK_TYPES = (FieldType.LINK, FieldType.LIST_LINKS, FieldType.LIST_MIXED)
 _LIST_LINK_TYPES = (FieldType.LIST_LINKS, FieldType.LIST_MIXED)
 
 # ── Column ordering slots ───────────────────────────────────────────────────
@@ -56,32 +55,16 @@ _TYPE_SLOT: dict[FieldType, int] = {
     FieldType.FORMULA:      8,  # fallback; overridden via output_type
 }
 
-_WIKILINK_RE = re.compile(r"^\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]$")
-
-
-def _parse_wikilink_name(value: str) -> Optional[str]:
-    m = _WIKILINK_RE.match(str(value).strip())
-    if not m:
-        return None
-    parts = m.group(1).split("/")
-    return parts[-1]
-
-
-def _effective_type(f: FieldSchema) -> FieldType:
-    if f.type == FieldType.FORMULA:
-        return f.output_type or FieldType.UNKNOWN
-    return f.type
-
 
 def _arrow_type(f: FieldSchema) -> pa.DataType:
-    return _FIELD_TO_ARROW.get(_effective_type(f), pa.string())
+    return _FIELD_TO_ARROW.get(f.effective_type, pa.string())
 
 
 def _convert_value(value: Any, field_type: FieldType) -> Any:
     if value is None:
         return None
     if field_type == FieldType.LINK:
-        name = _parse_wikilink_name(str(value))
+        name = parse_wikilink_name(str(value))
         return name if name is not None else str(value)
     if field_type in _LIST_LINK_TYPES:
         if not isinstance(value, list):
@@ -90,7 +73,7 @@ def _convert_value(value: Any, field_type: FieldType) -> Any:
         for item in value:
             if item is None:
                 continue
-            name = _parse_wikilink_name(str(item))
+            name = parse_wikilink_name(str(item))
             result.append(name if name is not None else str(item))
         return result
     return value
@@ -112,7 +95,7 @@ def _full_column_order(type_schema, field_map: dict[str, FieldSchema]) -> list[s
 
     def sort_key(name: str) -> tuple:
         f = field_map[name]
-        eff = _effective_type(f)
+        eff = f.effective_type
         slot = _TYPE_SLOT.get(eff, 8)
         return (slot, name)
 
@@ -184,7 +167,7 @@ def _build_arrow_table(
         if f is None:
             arrays[col] = pa.array([None] * len(recs), type=pa.string())
             continue
-        eff_type = _effective_type(f)
+        eff_type = f.effective_type
         values = [_convert_value(r.fields.get(col), eff_type) for r in recs]
         at = _arrow_type(f)
         try:

@@ -9,8 +9,10 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from .context import EvalContext
 
+from ..record import Record
+
 if TYPE_CHECKING:
-    from ..vault import Record, Vault
+    from ..vault import Vault
 
 # ── Namespace proxies ────────────────────────────────────────────
 

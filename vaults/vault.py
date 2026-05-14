@@ -7,128 +7,23 @@ from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Optional
 
 import frontmatter
 
-from .formula import BasesCompiler, EvalContext
-from .schema import FieldSchema, FieldType, Schema, TypeSchema, infer_field_type
+from .syntax import BasesCompiler, EvalContext
+from .schema import FieldSchema, FieldType, Schema, infer_field_type
+from .record import Record
+from .links import apply_dangling_refs, resolve_pairs
 
 if TYPE_CHECKING:
+    from .accessors.db import DbAccessor
     from .accessors.dfs import DfsAccessor
     from .accessors.graph import GraphAccessor
 
 logger = logging.getLogger(__name__)
 
-_WIKILINK_RE = re.compile(r"^\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]$")
 _VALID_DANGLING_REFS = ("drop", "stub")
-
-# FieldType → DuckDB column type (LINK and LIST_LINKS produce join tables, not columns)
-_FIELD_TO_DB_TYPE: dict[FieldType, str] = {
-    FieldType.STRING: "VARCHAR",
-    FieldType.INTEGER: "BIGINT",
-    FieldType.NUMBER: "DOUBLE",
-    FieldType.BOOLEAN: "BOOLEAN",
-    FieldType.DATE: "DATE",
-    FieldType.DATETIME: "TIMESTAMP",
-    FieldType.LIST_STRINGS: "VARCHAR[]",
-    FieldType.LIST_MIXED: "VARCHAR[]",
-    FieldType.UNKNOWN: "VARCHAR",
-}
-
-_LINK_TYPES = (FieldType.LINK, FieldType.LIST_LINKS)
-
-
-def _parse_wikilink(value: str) -> Optional[tuple[str, str]]:
-    """Return (folder, name) from a wikilink, or None if not a wikilink or has no folder prefix."""
-    m = _WIKILINK_RE.match(str(value).strip())
-    if not m:
-        return None
-    parts = m.group(1).split("/")
-    return (parts[0], parts[1]) if len(parts) == 2 else None
-
-
-def _iter_link_names(value: Any) -> list[str]:
-    """Extract record name stems from a raw link field value (string or list)."""
-    if value is None:
-        return []
-    if isinstance(value, str):
-        parsed = _parse_wikilink(value)
-        return [parsed[1]] if parsed else []
-    if isinstance(value, list):
-        result = []
-        for item in value:
-            if isinstance(item, str):
-                parsed = _parse_wikilink(item)
-                if parsed:
-                    result.append(parsed[1])
-        return result
-    return []
-
-
-def _write_link_field(
-    records: list,
-    field_name: str,
-    record_to_targets: dict[str, set[str]],
-    link_target_folder: str,
-    field_schema: Optional[FieldSchema],
-    expand_to_lists: bool,
-) -> None:
-    """Write reconciled link targets back to a field on each record.
-
-    Preserves existing wikilinks in their original order; appends any new
-    targets (sorted for determinism) discovered from the paired side.
-    """
-    is_list_field = field_schema is None or field_schema.type in (FieldType.LIST_LINKS, FieldType.LIST_MIXED)
-
-    for rec in records:
-        needed = record_to_targets.get(rec.name)
-        if not needed:
-            continue
-
-        existing_value = rec.fields.get(field_name)
-        existing_wikilinks: list[str] = []
-        existing_names: set[str] = set()
-
-        if isinstance(existing_value, str):
-            parsed = _parse_wikilink(existing_value)
-            if parsed:
-                existing_wikilinks.append(existing_value)
-                existing_names.add(parsed[1])
-        elif isinstance(existing_value, list):
-            for item in existing_value:
-                if isinstance(item, str):
-                    parsed = _parse_wikilink(item)
-                    if parsed:
-                        existing_wikilinks.append(item)
-                        existing_names.add(parsed[1])
-
-        new_wikilinks = [
-            f"[[{link_target_folder}/{name}]]"
-            for name in sorted(needed - existing_names)
-        ]
-        all_wikilinks = existing_wikilinks + new_wikilinks
-
-        if not all_wikilinks:
-            continue
-
-        if is_list_field:
-            rec.fields[field_name] = all_wikilinks
-        elif len(all_wikilinks) == 1:
-            rec.fields[field_name] = all_wikilinks[0]
-        elif expand_to_lists:
-            logger.warning(
-                "Pair reconciliation expanded singular LINK field '%s.%s' on record '%s' to a list. "
-                "Consider changing the field type to LIST_LINKS in the vault model.",
-                rec.type, field_name, rec.name,
-            )
-            rec.fields[field_name] = all_wikilinks
-        else:
-            raise ValueError(
-                f"Pair reconciliation would produce multiple targets for singular LINK field "
-                f"'{rec.type}.{field_name}' on record '{rec.name}'. "
-                f"Set expand_to_lists=True or fix the vault model."
-            )
 
 
 def _compute_fingerprint(data_root: Path) -> str:
@@ -137,95 +32,6 @@ def _compute_fingerprint(data_root: Path) -> str:
         h.update(str(p.relative_to(data_root)).encode())
         h.update(p.read_bytes())
     return h.hexdigest()
-
-
-
-def _coerce_for_db(value: Any, ft: FieldType) -> Any:
-    if value is None:
-        return None
-    if ft == FieldType.LIST_MIXED:
-        return [str(item) if item is not None else "" for item in value] if isinstance(value, list) else [str(value)]
-    if ft == FieldType.UNKNOWN:
-        return str(value)
-    return value
-
-
-def _apply_dangling_refs(
-    dangling_refs: str,
-    schema: Schema,
-    records: dict[str, list["Record"]],
-) -> dict[str, list["Record"]]:
-    # names that actually exist per known type (real records, not stubs)
-    existing: dict[str, set[str]] = {
-        type_name: {r.name for r in recs}
-        for type_name, recs in records.items()
-    }
-
-    # link field names per type
-    link_fields: dict[str, set[str]] = {
-        type_name: {
-            f.name for f in ts.fields
-            if f.type in (FieldType.LINK, FieldType.LIST_LINKS, FieldType.LIST_MIXED)
-        }
-        for type_name, ts in schema.types.items()
-    }
-
-    record_stubs: dict[tuple[str, str], "Record"] = {}
-    type_stubs: dict[str, TypeSchema] = {}
-
-    def _handle_link(folder: str, name: str) -> bool:
-        """Process one wikilink target. Returns True if the item should be kept."""
-        is_stub_type = folder in type_stubs
-        unknown_type = folder not in existing and not is_stub_type
-        unknown_record = not unknown_type and not is_stub_type and name not in existing[folder]
-
-        if not (unknown_type or is_stub_type or unknown_record):
-            return True
-
-        if dangling_refs == "drop":
-            return False
-
-        # stub mode: create type stub if needed, then record stub
-        if unknown_type:
-            ts = TypeSchema(name=folder)
-            type_stubs[folder] = ts
-            schema.types[folder] = ts
-            records[folder] = []
-            existing[folder] = set()
-
-        record_stubs.setdefault(
-            (folder, name),
-            Record(name=name, type_schema=type_stubs.get(folder, schema.types[folder])),
-        )
-        return True
-
-    for type_name, recs in list(records.items()):
-        for record in recs:
-            for field_name in link_fields.get(type_name, set()):
-                if field_name not in record.fields:
-                    continue
-                value = record.fields[field_name]
-
-                if isinstance(value, str):
-                    parsed = _parse_wikilink(value)
-                    if parsed and not _handle_link(*parsed):
-                        record.fields[field_name] = None
-
-                elif isinstance(value, list):
-                    new_list = []
-                    for item in value:
-                        parsed = _parse_wikilink(str(item)) if isinstance(item, str) else None
-                        if parsed:
-                            if _handle_link(*parsed):
-                                new_list.append(item)
-                        else:
-                            new_list.append(item)
-                    record.fields[field_name] = new_list
-
-    for (type_name, _), stub in record_stubs.items():
-        records[type_name].append(stub)
-
-    return records
 
 
 _FORMULA_DEP_RE = re.compile(r"\bformula\.(\w+)")
@@ -272,24 +78,17 @@ def _topo_sort_formulas(
 
 
 @dataclass
-class Record:
-    name: str
-    type_schema: TypeSchema
-    fields: dict[str, Any] = field(default_factory=dict)
-    path: Optional[Path] = None
-
-    @property
-    def type(self) -> str:
-        return self.type_schema.name
-
-
-@dataclass
 class Vault:
     schema: Schema
     records: dict[str, list[Record]] = field(default_factory=dict)
     path: Optional[Path] = None
     relationship_pairs: list[tuple[str, str]] = field(default_factory=list)
     fingerprint: str = field(default="", repr=False)
+
+    @property
+    def db(self) -> "DbAccessor":
+        from .accessors.db import DbAccessor
+        return DbAccessor(self)
 
     @property
     def dfs(self) -> "DfsAccessor":
@@ -302,93 +101,7 @@ class Vault:
         return GraphAccessor(self)
 
     def _resolve_pairs(self, expand_to_lists: bool = True) -> None:
-        """Reconcile paired link fields across all records in-place.
-
-        For each declared pair (TypeA.field_x, TypeB.field_y), computes the
-        outer union of edges asserted on either side and writes the complete
-        set back to both fields on every relevant record. After this runs,
-        all downstream consumers (.dfs, .db, .graph) see fully populated
-        link fields and need no pair-awareness of their own.
-
-        A pre-loop snapshot of all pair-field values is taken so that writes
-        from one pair never corrupt the edge collection of another pair that
-        shares the same field name on the secondary side.
-        """
-        if not self.relationship_pairs:
-            return
-
-        field_lookup: dict[tuple[str, str], FieldSchema] = {
-            (type_name, f.name): f
-            for type_name, type_schema in self.schema.types.items()
-            for f in type_schema.fields
-        }
-
-        # Snapshot initial link values for all pair fields before any mutation.
-        pair_fields: set[tuple[str, str]] = set()
-        for first, second in self.relationship_pairs:
-            type_a, field_a = first.split(".", 1)
-            type_b, field_b = second.split(".", 1)
-            pair_fields.add((type_a, field_a))
-            pair_fields.add((type_b, field_b))
-
-        snapshot: dict[tuple[str, str, str], Any] = {}
-        for type_name, field_name in pair_fields:
-            for rec in self.records.get(type_name, []):
-                snapshot[(type_name, rec.name, field_name)] = rec.fields.get(field_name)
-
-        for first, second in self.relationship_pairs:
-            type_a, field_a = first.split(".", 1)
-            type_b, field_b = second.split(".", 1)
-
-            schema_fa = field_lookup.get((type_a, field_a))
-            schema_fb = field_lookup.get((type_b, field_b))
-
-            # Outer union of (a_name, b_name) edges declared on either side,
-            # read from the snapshot so earlier pair writes don't bleed through.
-            edges: set[tuple[str, str]] = set()
-            for rec in self.records.get(type_a, []):
-                for name in _iter_link_names(snapshot.get((type_a, rec.name, field_a))):
-                    edges.add((rec.name, name))
-            for rec in self.records.get(type_b, []):
-                for name in _iter_link_names(snapshot.get((type_b, rec.name, field_b))):
-                    edges.add((name, rec.name))  # inverted: B→A becomes (a, b)
-
-            if not edges:
-                continue
-
-            a_to_bs: dict[str, set[str]] = defaultdict(set)
-            b_to_as: dict[str, set[str]] = defaultdict(set)
-            for a_name, b_name in edges:
-                a_to_bs[a_name].add(b_name)
-                b_to_as[b_name].add(a_name)
-
-            link_target_b = (schema_fa.link_target if schema_fa else None) or type_b
-            _write_link_field(
-                records=self.records.get(type_a, []),
-                field_name=field_a,
-                record_to_targets=a_to_bs,
-                link_target_folder=link_target_b,
-                field_schema=schema_fa,
-                expand_to_lists=expand_to_lists,
-            )
-            if schema_fa is None and a_to_bs and type_a in self.schema.types:
-                self.schema.types[type_a].fields.append(
-                    FieldSchema(name=field_a, type=FieldType.LIST_LINKS, link_target=link_target_b)
-                )
-
-            link_target_a = (schema_fb.link_target if schema_fb else None) or type_a
-            _write_link_field(
-                records=self.records.get(type_b, []),
-                field_name=field_b,
-                record_to_targets=b_to_as,
-                link_target_folder=link_target_a,
-                field_schema=schema_fb,
-                expand_to_lists=expand_to_lists,
-            )
-            if schema_fb is None and b_to_as and type_b in self.schema.types:
-                self.schema.types[type_b].fields.append(
-                    FieldSchema(name=field_b, type=FieldType.LIST_LINKS, link_target=link_target_a)
-                )
+        resolve_pairs(self, expand_to_lists=expand_to_lists)
 
     def is_stale(self) -> bool:
         if self.path is None:
@@ -505,7 +218,7 @@ class Vault:
                         type_name,
                     )
 
-        records = _apply_dangling_refs(dangling_refs, schema, records)
+        records = apply_dangling_refs(dangling_refs, schema, records)
 
         frozen_now = datetime.now()
         compiler = BasesCompiler()
@@ -565,64 +278,3 @@ class Vault:
         vault._resolve_pairs(expand_to_lists=expand_to_lists)
         return vault
 
-    def to_db(self):
-        """Return a read-only DuckDB in-memory connection with the vault loaded as tables and views."""
-        import duckdb
-
-        con = duckdb.connect()
-
-        for type_name, type_schema in self.schema.types.items():
-            recs = self.records.get(type_name, [])
-
-            scalar_fields = [f for f in type_schema.fields if f.type not in _LINK_TYPES]
-
-            col_defs = ["record VARCHAR PRIMARY KEY"]
-            for f in scalar_fields:
-                effective = (f.output_type or FieldType.UNKNOWN) if f.type == FieldType.FORMULA else f.type
-                db_type = _FIELD_TO_DB_TYPE.get(effective, "VARCHAR")
-                col_defs.append(f'"{f.name}" {db_type}')
-
-            con.execute(f'CREATE TABLE "{type_name}" ({", ".join(col_defs)})')
-
-            if recs:
-                placeholders = ", ".join(["?"] * (1 + len(scalar_fields)))
-                insert_sql = f'INSERT INTO "{type_name}" VALUES ({placeholders})'
-                rows = []
-                for rec in recs:
-                    row: list[Any] = [rec.name]
-                    for f in scalar_fields:
-                        row.append(_coerce_for_db(rec.fields.get(f.name), f.type))
-                    rows.append(row)
-                con.executemany(insert_sql, rows)
-
-            for f in type_schema.fields:
-                if f.type not in _LINK_TYPES:
-                    continue
-                table_name = f"{type_name}__{f.name}"
-                rows = []
-                for rec in recs:
-                    value = rec.fields.get(f.name)
-                    if value is None:
-                        continue
-                    targets: list[str] = []
-                    if isinstance(value, str):
-                        parsed = _parse_wikilink(value)
-                        if parsed:
-                            targets.append(parsed[1])
-                    elif isinstance(value, list):
-                        for item in value:
-                            if isinstance(item, str):
-                                parsed = _parse_wikilink(item)
-                                if parsed:
-                                    targets.append(parsed[1])
-                    for target in targets:
-                        rows.append((rec.name, target))
-                con.execute(
-                    f'CREATE TABLE "{table_name}" '
-                    f'(source VARCHAR, target VARCHAR, PRIMARY KEY (source, target))'
-                )
-                unique = list({(s, t) for s, t in rows})
-                if unique:
-                    con.executemany(f'INSERT INTO "{table_name}" VALUES (?, ?)', unique)
-
-        return con

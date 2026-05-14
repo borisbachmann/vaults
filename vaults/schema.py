@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import datetime
 import json
-import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
@@ -28,22 +27,9 @@ class FieldType(str, Enum):
     INTEGER = "integer"
 
 
-_WIKILINK_RE = re.compile(r"^\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]$")
-
-
-def _is_wikilink(value: str) -> bool:
-    return bool(_WIKILINK_RE.match(str(value).strip()))
-
-
-def _wikilink_target_folder(value: str) -> Optional[str]:
-    m = _WIKILINK_RE.match(str(value).strip())
-    if not m:
-        return None
-    parts = m.group(1).split("/")
-    return parts[0] if len(parts) > 1 else None
-
-
 def infer_field_type(values: list) -> FieldType:
+    from .links import is_wikilink
+
     non_null = [v for v in values if v is not None and v != "" and v != []]
     if not non_null:
         return FieldType.UNKNOWN
@@ -53,7 +39,6 @@ def infer_field_type(values: list) -> FieldType:
         return FieldType.INTEGER
     if all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in non_null):
         return FieldType.NUMBER
-    # datetime before date — datetime.datetime is a subclass of datetime.date
     if all(isinstance(v, datetime.datetime) for v in non_null):
         return FieldType.DATETIME
     if all(isinstance(v, datetime.date) and not isinstance(v, datetime.datetime) for v in non_null):
@@ -62,26 +47,28 @@ def infer_field_type(values: list) -> FieldType:
         flat = [item for sub in non_null for item in sub if item is not None and item != ""]
         if not flat:
             return FieldType.LIST_STRINGS
-        if all(_is_wikilink(str(item)) for item in flat):
+        if all(is_wikilink(str(item)) for item in flat):
             return FieldType.LIST_LINKS
-        if any(_is_wikilink(str(item)) for item in flat):
+        if any(is_wikilink(str(item)) for item in flat):
             return FieldType.LIST_MIXED
         return FieldType.LIST_STRINGS
     if all(isinstance(v, str) for v in non_null):
-        if all(_is_wikilink(v) for v in non_null):
+        if all(is_wikilink(v) for v in non_null):
             return FieldType.LINK
         return FieldType.STRING
     return FieldType.UNKNOWN
 
 
 def infer_link_target(values: list) -> Optional[str]:
+    from .links import wikilink_target_folder
+
     folders: set[str] = set()
     for v in values:
         if v is None or v == "" or v == []:
             continue
         items = v if isinstance(v, list) else [v]
         for item in items:
-            folder = _wikilink_target_folder(str(item))
+            folder = wikilink_target_folder(str(item))
             if folder:
                 folders.add(folder)
     return folders.pop() if len(folders) == 1 else None
@@ -94,6 +81,12 @@ class FieldSchema:
     link_target: Optional[str] = None
     formula: Optional[str] = None
     output_type: Optional[FieldType] = None
+
+    @property
+    def effective_type(self) -> "FieldType":
+        if self.type == FieldType.FORMULA:
+            return self.output_type or FieldType.UNKNOWN
+        return self.type
 
 
 @dataclass

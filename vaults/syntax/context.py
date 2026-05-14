@@ -7,8 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..record import Record
+
 if TYPE_CHECKING:
-    from ..vault import Record, Vault
+    from ..vault import Vault
 
 
 @dataclass

@@ -6,13 +6,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from ..schema import FieldSchema, FieldType
+from ..links import iter_link_names, LINK_TYPES
 
 if TYPE_CHECKING:
     import networkx as nx
     from ..vault import Vault
-
-_WIKILINK_RE = re.compile(r"^\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]$")
-_LINK_TYPES = (FieldType.LINK, FieldType.LIST_LINKS, FieldType.LIST_MIXED)
 
 _FIELD_TO_KUZU: dict[FieldType, str] = {
     FieldType.STRING:       "STRING",
@@ -25,33 +23,6 @@ _FIELD_TO_KUZU: dict[FieldType, str] = {
     FieldType.LIST_MIXED:   "STRING[]",
     FieldType.UNKNOWN:      "STRING",
 }
-
-
-def _effective_type(f: FieldSchema) -> FieldType:
-    if f.type == FieldType.FORMULA:
-        return f.output_type or FieldType.UNKNOWN
-    return f.type
-
-
-def _iter_link_names(value: Any) -> list[str]:
-    """Extract bare record name stems from a link field value."""
-    if value is None:
-        return []
-    if isinstance(value, str):
-        m = _WIKILINK_RE.match(value.strip())
-        if not m:
-            return []
-        parts = m.group(1).split("/")
-        return [parts[-1]]
-    if isinstance(value, list):
-        result = []
-        for item in value:
-            if isinstance(item, str):
-                m = _WIKILINK_RE.match(item.strip())
-                if m:
-                    result.append(m.group(1).split("/")[-1])
-        return result
-    return []
 
 
 def _coerce_kuzu(value: Any, field_type: FieldType) -> Any:
@@ -98,7 +69,7 @@ def _build_rel_names(vault: "Vault") -> dict[tuple[str, str], str]:
 
     for type_name, type_schema in vault.schema.types.items():
         for f in type_schema.fields:
-            if _effective_type(f) in _LINK_TYPES and f.link_target:
+            if f.effective_type in LINK_TYPES and f.link_target:
                 short = _kuzu_name(f.name)
                 short_counts[short] += 1
                 link_fields.append((type_name, f.name))
@@ -129,7 +100,7 @@ def _build_digraph(vault: "Vault") -> "nx.DiGraph":
             node_id = f"{rec.name}|{type_name}"
             attrs: dict[str, Any] = {"type": type_name}
             for f in type_schema.fields:
-                if _effective_type(f) in _LINK_TYPES:
+                if f.effective_type in LINK_TYPES:
                     continue
                 val = rec.fields.get(f.name)
                 if val is not None:
@@ -138,12 +109,12 @@ def _build_digraph(vault: "Vault") -> "nx.DiGraph":
 
     for type_name, type_schema in vault.schema.types.items():
         for f in type_schema.fields:
-            if _effective_type(f) not in _LINK_TYPES:
+            if f.effective_type not in LINK_TYPES:
                 continue
             target_type = f.link_target or ""
             for rec in vault.records.get(type_name, []):
                 source_id = f"{rec.name}|{type_name}"
-                for target_name in _iter_link_names(rec.fields.get(f.name)):
+                for target_name in iter_link_names(rec.fields.get(f.name)):
                     target_id = f"{target_name}|{target_type}" if target_type else target_name
                     G.add_edge(
                         source_id, target_id,
@@ -187,7 +158,7 @@ class GraphAccessor:
             props: dict[str, str] = {}
             rels: dict[str, str] = {}
             for f in type_schema.fields:
-                if _effective_type(f) in _LINK_TYPES:
+                if f.effective_type in LINK_TYPES:
                     if f.link_target:
                         rels[f.name] = rel_names[(type_name, f.name)]
                 else:
@@ -212,7 +183,7 @@ class GraphAccessor:
             props: dict[str, str] = {}
             rels: dict[str, str] = {}
             for f in type_schema.fields:
-                if _effective_type(f) in _LINK_TYPES:
+                if f.effective_type in LINK_TYPES:
                     if f.link_target:
                         rels[f.name] = _uri_safe(f.name)
                 else:
@@ -263,11 +234,11 @@ class GraphAccessor:
         for type_name, type_schema in vault.schema.types.items():
             scalar_fields = [
                 f for f in type_schema.fields
-                if _effective_type(f) not in _LINK_TYPES
+                if f.effective_type not in LINK_TYPES
             ]
             col_defs = ["record STRING"]
             for f in scalar_fields:
-                kuzu_type = _FIELD_TO_KUZU.get(_effective_type(f), "STRING")
+                kuzu_type = _FIELD_TO_KUZU.get(f.effective_type, "STRING")
                 col_defs.append(f"{_kuzu_name(f.name)} {kuzu_type}")
             col_defs.append("PRIMARY KEY (record)")
             conn.execute(f"CREATE NODE TABLE `{type_name}` ({', '.join(col_defs)})")
@@ -280,7 +251,7 @@ class GraphAccessor:
                     if val is None:
                         continue
                     pname = f"_f{i}"
-                    params[pname] = _coerce_kuzu(val, _effective_type(f))
+                    params[pname] = _coerce_kuzu(val, f.effective_type)
                     prop_parts.append(f"{_kuzu_name(f.name)}: ${pname}")
                 conn.execute(
                     f"CREATE (:`{type_name}` {{{', '.join(prop_parts)}}})",
@@ -289,7 +260,7 @@ class GraphAccessor:
 
         for type_name, type_schema in vault.schema.types.items():
             for f in type_schema.fields:
-                if _effective_type(f) not in _LINK_TYPES:
+                if f.effective_type not in LINK_TYPES:
                     continue
                 target_type = f.link_target
                 if not target_type:
@@ -299,7 +270,7 @@ class GraphAccessor:
                     f"CREATE REL TABLE `{rel_name}` (FROM `{type_name}` TO `{target_type}`)"
                 )
                 for rec in vault.records.get(type_name, []):
-                    for target_name in _iter_link_names(rec.fields.get(f.name)):
+                    for target_name in iter_link_names(rec.fields.get(f.name)):
                         conn.execute(
                             f"MATCH (a:`{type_name}` {{record: $src}}), "
                             f"(b:`{target_type}` {{record: $tgt}}) "
@@ -361,9 +332,9 @@ class GraphAccessor:
         for type_name, type_schema in vault.schema.types.items():
             g.add((onto[_uri_safe(type_name)], RDF.type, OWL.Class))
             for f in type_schema.fields:
-                eff = _effective_type(f)
+                eff = f.effective_type
                 prop_uri = onto[_uri_safe(f.name)]
-                if eff in _LINK_TYPES:
+                if eff in LINK_TYPES:
                     g.add((prop_uri, RDF.type, OWL.ObjectProperty))
                 else:
                     g.add((prop_uri, RDF.type, OWL.DatatypeProperty))
@@ -383,15 +354,15 @@ class GraphAccessor:
                 g.add((ind_uri, RDF.type, cls_uri))
 
                 for f in type_schema.fields:
-                    eff = _effective_type(f)
+                    eff = f.effective_type
                     prop_uri = onto[_uri_safe(f.name)]
                     val = rec.fields.get(f.name)
                     if val is None:
                         continue
 
-                    if eff in _LINK_TYPES:
+                    if eff in LINK_TYPES:
                         target_type = f.link_target or type_name
-                        for target_name in _iter_link_names(val):
+                        for target_name in iter_link_names(val):
                             target_uri = URIRef(
                                 base_uri + f"{_uri_safe(target_type)}/{_uri_safe(target_name)}"
                             )
