@@ -2,16 +2,20 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator, KeysView, Optional
 
 import pyarrow as pa
 import yaml
 
-from ..schema import FieldSchema, FieldType
+from ..formula import BasesCompiler, EvalContext
+from ..schema import FieldSchema, FieldType, _serialize_filter
 
 if TYPE_CHECKING:
     from ..vault import Vault
+
+_compiler = BasesCompiler()
 
 logger = logging.getLogger(__name__)
 
@@ -119,14 +123,41 @@ def _full_column_order(type_schema, field_map: dict[str, FieldSchema]) -> list[s
     return cols
 
 
+def _filter_records(vault: "Vault", type_name: str, view_config: dict) -> list:
+    raw = view_config.get("filters")
+    if not raw:
+        return vault.records.get(type_name, [])
+    expr = _serialize_filter(raw)
+    if not expr:
+        return vault.records.get(type_name, [])
+    fn = _compiler.translate_filter(expr)
+    base_path = (
+        vault.path / vault.schema.bases_folder / f"{type_name}.base"
+        if vault.path else Path(f"{type_name}.base")
+    )
+    now = datetime.now()
+    result = []
+    for rec in vault.records.get(type_name, []):
+        ctx = EvalContext(record=rec, vault=vault, base_path=base_path, now=now)
+        try:
+            if fn(ctx):
+                result.append(rec)
+        except Exception:
+            result.append(rec)
+    return result
+
+
 def _build_arrow_table(
     vault: "Vault",
     type_name: str,
     view_config: Optional[dict] = None,
-    warn_filter: bool = False,
 ) -> pa.Table:
     type_schema = vault.schema.types[type_name]
-    recs = vault.records.get(type_name, [])
+    recs = (
+        _filter_records(vault, type_name, view_config)
+        if view_config is not None
+        else vault.records.get(type_name, [])
+    )
     field_map = {f.name: f for f in type_schema.fields}
 
     if view_config is not None:
@@ -156,7 +187,25 @@ def _build_arrow_table(
         except (pa.ArrowInvalid, pa.ArrowTypeError):
             arrays[col] = pa.array([str(v) if v is not None else None for v in values], type=pa.string())
 
-    return pa.table(arrays)
+    tbl = pa.table(arrays)
+
+    if view_config is not None:
+        sort_specs = view_config.get("sort") or []
+        pa_sort_keys = []
+        for sk in sort_specs:
+            col = _parse_order_entry(str(sk.get("property", "")))
+            direction = "descending" if str(sk.get("direction", "ASC")).upper() == "DESC" else "ascending"
+            if col not in tbl.column_names:
+                continue
+            if pa.types.is_list(tbl.schema.field(col).type):
+                logger.debug("Skipping sort on list column '%s' — not supported by Arrow", col)
+                continue
+            pa_sort_keys.append((col, direction))
+        if pa_sort_keys:
+            import pyarrow.compute as pc
+            tbl = tbl.take(pc.sort_indices(tbl, sort_keys=pa_sort_keys))
+
+    return tbl
 
 
 # ── Accessor classes ────────────────────────────────────────────────────────
@@ -232,19 +281,10 @@ class TableAccessor:
         self._view_config = _view_config
         self._arrow_cache: Optional[pa.Table] = None
         self._views_cache: Optional[ViewsAccessor] = None
-        self._filter_warned = False
 
     def to_arrow(self) -> pa.Table:
         if self._arrow_cache is not None:
             return self._arrow_cache
-        if self._view_config is not None and not self._filter_warned:
-            if self._view_config.get("filters") or self._view_config.get("sort"):
-                logger.warning(
-                    "View '%s' defines filters/sort — these are not applied in v1; "
-                    "all rows returned.",
-                    self._view_config.get("name", self._type_name),
-                )
-            self._filter_warned = True
         self._arrow_cache = _build_arrow_table(
             self._vault, self._type_name, self._view_config
         )

@@ -207,11 +207,14 @@ def test_view_column_selection(vault):
     assert tbl.column_names == ["_record", "Titel", "Beginn", "Jahr", "BudgetLabel"]
 
 
-def test_view_filter_warns(vault, caplog):
-    """View with filters logs a warning but returns all rows."""
-    import logging
-    ta = vault.dfs["Projekte"].views["Projekte"]
-    with caplog.at_level(logging.WARNING, logger="vaults.accessors.dfs"):
-        tbl = ta.to_arrow()
+def test_view_filter_applied(vault):
+    """View with a filter returns only matching rows."""
+    tbl = vault.dfs["Projekte"].views["Projekte"].to_arrow()
     assert tbl.num_rows == 2
-    assert any("filters" in r.message or "filter" in r.message for r in caplog.records)
+
+
+def test_view_sort_applied(vault):
+    """View with sort:DESC on Titel returns Beta before Alpha."""
+    tbl = vault.dfs["Projekte"].views["Projekte"].to_arrow()
+    records = tbl.column("_record").to_pylist()
+    assert records == ["Beta", "Alpha"]

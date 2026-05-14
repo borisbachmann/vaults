@@ -13,6 +13,9 @@ views:
       - Beginn
       - formula.Jahr
       - BudgetLabel
+    sort:
+      - property: Titel
+        direction: DESC
     filters:
       and:
         - file.inFolder("data/Projekte")
