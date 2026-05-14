@@ -167,6 +167,11 @@ def _build_arrow_table(
             col = _parse_order_entry(str(entry))
             if col == "_record" or col in field_map:
                 cols.append(col)
+        group_by = view_config.get("groupBy")
+        if group_by:
+            group_col_name = _parse_order_entry(str(group_by.get("property", "")))
+            if group_col_name and group_col_name not in cols and group_col_name in field_map:
+                cols.append(group_col_name)
     else:
         cols = _full_column_order(type_schema, field_map)
 
@@ -190,22 +195,36 @@ def _build_arrow_table(
     tbl = pa.table(arrays)
 
     if view_config is not None:
-        sort_specs = view_config.get("sort") or []
         pa_sort_keys = []
-        for sk in sort_specs:
+
+        group_by = view_config.get("groupBy")
+        group_col = _parse_order_entry(str(group_by["property"])) if group_by else None
+        if group_col and group_col in tbl.column_names:
+            if pa.types.is_list(tbl.schema.field(group_col).type):
+                logger.warning(
+                    "Grouping by list columns is not supported. "
+                    "Using group column %r as primary sort key.", group_col
+                )
+                # Arrow can't sort list columns — sort applied post-conversion
+            else:
+                group_dir = "descending" if str(group_by.get("direction", "ASC")).upper() == "DESC" else "ascending"
+                pa_sort_keys.append((group_col, group_dir))
+
+        for sk in (view_config.get("sort") or []):
             col = _parse_order_entry(str(sk.get("property", "")))
             direction = "descending" if str(sk.get("direction", "ASC")).upper() == "DESC" else "ascending"
-            if col not in tbl.column_names:
+            if col not in tbl.column_names or col == group_col:
                 continue
             if pa.types.is_list(tbl.schema.field(col).type):
                 logger.debug("Skipping sort on list column '%s' — not supported by Arrow", col)
                 continue
             pa_sort_keys.append((col, direction))
+
         if pa_sort_keys:
             import pyarrow.compute as pc
             tbl = tbl.take(pc.sort_indices(tbl, sort_keys=pa_sort_keys))
 
-    return tbl
+    return tbl, (group_col if view_config is not None else None)
 
 
 # ── Accessor classes ────────────────────────────────────────────────────────
@@ -280,12 +299,13 @@ class TableAccessor:
         self._type_name = _type_name
         self._view_config = _view_config
         self._arrow_cache: Optional[pa.Table] = None
+        self._group_col: Optional[str] = None
         self._views_cache: Optional[ViewsAccessor] = None
 
     def to_arrow(self) -> pa.Table:
         if self._arrow_cache is not None:
             return self._arrow_cache
-        self._arrow_cache = _build_arrow_table(
+        self._arrow_cache, self._group_col = _build_arrow_table(
             self._vault, self._type_name, self._view_config
         )
         return self._arrow_cache
@@ -297,9 +317,23 @@ class TableAccessor:
             raise ImportError(
                 "to_pandas() requires pandas. Install with: pip install vaults[pandas]"
             ) from e
-        return self.to_arrow().to_pandas(
+        tbl = self.to_arrow()
+        df = tbl.to_pandas(
             types_mapper=lambda t: pd.Int64Dtype() if t == pa.int64() else None
         )
+        if self._group_col and self._group_col in df.columns:
+            if pa.types.is_list(tbl.schema.field(self._group_col).type):
+                # List columns can't be a MultiIndex level (not hashable); sort only.
+                # Document: groupBy on list fields → group column first, sorted by it, no MultiIndex.
+                other = [c for c in df.columns if c != self._group_col]
+                df = df[[self._group_col] + other].sort_values(
+                    self._group_col, na_position="last", kind="stable"
+                )
+            else:
+                # Scalar groupBy → MultiIndex (group_col, _record), matching Obsidian's grouping UX.
+                # group_col becomes the first index level, which is effectively first in the frame.
+                df = df.set_index([self._group_col, "_record"])
+        return df
 
     def to_polars(self):
         try:
@@ -308,7 +342,17 @@ class TableAccessor:
             raise ImportError(
                 "to_polars() requires polars. Install with: pip install vaults[polars]"
             ) from e
-        return pl.from_arrow(self.to_arrow())
+        tbl = self.to_arrow()
+        df = pl.from_arrow(tbl)
+        if self._group_col and self._group_col in df.columns:
+            # Move group column to first position (Polars has no MultiIndex).
+            other = [c for c in df.columns if c != self._group_col]
+            df = df.select([self._group_col] + other)
+            if pa.types.is_list(tbl.schema.field(self._group_col).type):
+                # List columns can't be a true group key in Polars either; sort only.
+                # Document: groupBy on list fields → group column first, sorted by it, no explicit grouping.
+                df = df.sort(self._group_col, nulls_last=True)
+        return df
 
     @property
     def views(self) -> ViewsAccessor:
