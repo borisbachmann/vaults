@@ -16,6 +16,7 @@ from .schema import FieldSchema, FieldType, Schema, TypeSchema, infer_field_type
 
 if TYPE_CHECKING:
     from .accessors.dfs import DfsAccessor
+    from .accessors.graph import GraphAccessor
 
 logger = logging.getLogger(__name__)
 
@@ -294,6 +295,11 @@ class Vault:
     def dfs(self) -> "DfsAccessor":
         from .accessors.dfs import DfsAccessor
         return DfsAccessor(self)
+
+    @property
+    def graph(self) -> "GraphAccessor":
+        from .accessors.graph import GraphAccessor
+        return GraphAccessor(self)
 
     def _resolve_pairs(self, expand_to_lists: bool = True) -> None:
         """Reconcile paired link fields across all records in-place.

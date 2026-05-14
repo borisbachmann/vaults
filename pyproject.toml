@@ -11,13 +11,16 @@ dependencies = [
     "pyyaml",
     "lark",
     "pyarrow",
+    "networkx",
+    "rdflib",
 ]
 
 [project.optional-dependencies]
-dev    = ["pytest", "duckdb", "pandas", "numpy"]
+dev    = ["pytest", "duckdb", "pandas", "numpy", "kuzu"]
 pandas = ["pandas"]
 polars = ["polars"]
 dfs    = ["pandas", "polars"]
+graph  = ["kuzu"]
 
 [tool.setuptools.packages.find]
 where = ["."]
