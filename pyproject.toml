@@ -10,10 +10,14 @@ dependencies = [
     "python-frontmatter",
     "pyyaml",
     "lark",
+    "pyarrow",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "duckdb", "pandas", "numpy"]
+dev    = ["pytest", "duckdb", "pandas", "numpy"]
+pandas = ["pandas"]
+polars = ["polars"]
+dfs    = ["pandas", "polars"]
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -7,12 +7,15 @@ from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import frontmatter
 
 from .formula import BasesCompiler, EvalContext
 from .schema import FieldSchema, FieldType, Schema, TypeSchema, infer_field_type
+
+if TYPE_CHECKING:
+    from .accessors.dfs import DfsAccessor
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +25,8 @@ _VALID_DANGLING_REFS = ("drop", "stub")
 # FieldType → DuckDB column type (LINK and LIST_LINKS produce join tables, not columns)
 _FIELD_TO_DB_TYPE: dict[FieldType, str] = {
     FieldType.STRING: "VARCHAR",
-    FieldType.NUMBER: "DOUBLE",      # refined per-field to BIGINT if all-int
+    FieldType.INTEGER: "BIGINT",
+    FieldType.NUMBER: "DOUBLE",
     FieldType.BOOLEAN: "BOOLEAN",
     FieldType.DATE: "DATE",
     FieldType.DATETIME: "TIMESTAMP",
@@ -50,12 +54,6 @@ def _compute_fingerprint(data_root: Path) -> str:
         h.update(p.read_bytes())
     return h.hexdigest()
 
-
-def _numeric_db_type(values: list[Any]) -> str:
-    non_null = [v for v in values if v is not None]
-    if not non_null or all(isinstance(v, int) and not isinstance(v, bool) for v in non_null):
-        return "BIGINT"
-    return "DOUBLE"
 
 
 def _coerce_for_db(value: Any, ft: FieldType) -> Any:
@@ -208,6 +206,11 @@ class Vault:
     path: Optional[Path] = None
     relationship_pairs: list[tuple[str, str]] = field(default_factory=list)
     fingerprint: str = field(default="", repr=False)
+
+    @property
+    def dfs(self) -> "DfsAccessor":
+        from .accessors.dfs import DfsAccessor
+        return DfsAccessor(self)
 
     def is_stale(self) -> bool:
         if self.path is None:
@@ -404,25 +407,11 @@ class Vault:
 
             scalar_fields = [f for f in type_schema.fields if f.type not in _LINK_TYPES]
 
-            # Pre-collect values per field for numeric refinement
-            field_values: dict[str, list[Any]] = {f.name: [] for f in scalar_fields}
-            for rec in recs:
-                for f in scalar_fields:
-                    field_values[f.name].append(rec.fields.get(f.name))
-
             # Build DDL for main type table
             col_defs = ["record VARCHAR PRIMARY KEY"]
             for f in scalar_fields:
-                if f.type == FieldType.FORMULA:
-                    effective = f.output_type or FieldType.UNKNOWN
-                    if effective == FieldType.NUMBER:
-                        db_type = _numeric_db_type(field_values[f.name])
-                    else:
-                        db_type = _FIELD_TO_DB_TYPE.get(effective, "VARCHAR")
-                elif f.type == FieldType.NUMBER:
-                    db_type = _numeric_db_type(field_values[f.name])
-                else:
-                    db_type = _FIELD_TO_DB_TYPE.get(f.type, "VARCHAR")
+                effective = (f.output_type or FieldType.UNKNOWN) if f.type == FieldType.FORMULA else f.type
+                db_type = _FIELD_TO_DB_TYPE.get(effective, "VARCHAR")
                 col_defs.append(f'"{f.name}" {db_type}')
 
             con.execute(f'CREATE TABLE "{type_name}" ({", ".join(col_defs)})')

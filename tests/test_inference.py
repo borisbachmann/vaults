@@ -13,11 +13,11 @@ def test_boolean():
 def test_boolean_not_confused_by_int():
     # booleans are ints in Python; bool check must come first
     assert infer_field_type([True, False]) == FieldType.BOOLEAN
-    assert infer_field_type([0, 1, 2]) == FieldType.NUMBER
+    assert infer_field_type([0, 1, 2]) == FieldType.INTEGER
 
 
 def test_number_int():
-    assert infer_field_type([1, 2, 3]) == FieldType.NUMBER
+    assert infer_field_type([1, 2, 3]) == FieldType.INTEGER
 
 
 def test_number_float():

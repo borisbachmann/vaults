@@ -25,6 +25,7 @@ class FieldType(str, Enum):
     LIST_MIXED = "list[mixed]"
     UNKNOWN = "unknown"
     FORMULA = "formula"
+    INTEGER = "integer"
 
 
 _WIKILINK_RE = re.compile(r"^\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]$")
@@ -48,6 +49,8 @@ def infer_field_type(values: list) -> FieldType:
         return FieldType.UNKNOWN
     if all(isinstance(v, bool) for v in non_null):
         return FieldType.BOOLEAN
+    if all(isinstance(v, int) and not isinstance(v, bool) for v in non_null):
+        return FieldType.INTEGER
     if all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in non_null):
         return FieldType.NUMBER
     # datetime before date — datetime.datetime is a subclass of datetime.date

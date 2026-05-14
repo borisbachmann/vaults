@@ -58,9 +58,9 @@ def test_projekte_abgeschlossen_is_boolean(schema):
     assert f.type == FieldType.BOOLEAN
 
 
-def test_projekte_budget_is_number(schema):
+def test_projekte_budget_is_integer(schema):
     f = _field(schema, "Projekte", "Budget")
-    assert f.type == FieldType.NUMBER
+    assert f.type == FieldType.INTEGER
 
 
 def test_projekte_traeger_is_list_links(schema):

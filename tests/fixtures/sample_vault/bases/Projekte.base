@@ -4,3 +4,15 @@ formulas:
 filters:
   and:
     - file.inFolder("data/Projekte")
+views:
+  - name: Projekte
+    type: table
+    order:
+      - file.name
+      - Titel
+      - Beginn
+      - formula.Jahr
+      - BudgetLabel
+    filters:
+      and:
+        - file.inFolder("data/Projekte")
