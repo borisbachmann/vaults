@@ -20,13 +20,13 @@ FIXTURE = Path(__file__).parent / "fixtures" / "sample_vault"
 @pytest.fixture
 def con():
     v = Vault.from_vault(FIXTURE, dangling_refs="stub")
-    return v.to_db()
+    return v.db.to_duckdb()
 
 
 @pytest.fixture
 def con_drop():
     v = Vault.from_vault(FIXTURE, dangling_refs="drop")
-    return v.to_db()
+    return v.db.to_duckdb()
 
 
 @pytest.fixture
@@ -36,7 +36,7 @@ def con_pairs():
         dangling_refs="stub",
         relationship_pairs=[("Projekte.Traeger", "Personen.Projekte")],
     )
-    return v.to_db()
+    return v.db.to_duckdb()
 
 
 # --- table creation ---
