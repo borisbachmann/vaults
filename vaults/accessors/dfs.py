@@ -79,9 +79,14 @@ def _convert_value(value: Any, field_type: FieldType) -> Any:
     return value
 
 
-def _parse_order_entry(entry: str) -> str:
+def _parse_order_entry(entry: str, property_display: dict[str, str] | None = None) -> str:
     if entry == "file.name":
         return "_record"
+    if property_display:
+        if entry in property_display:
+            return property_display[entry]
+        if f"note.{entry}" in property_display:
+            return property_display[f"note.{entry}"]
     if entry.startswith("formula."):
         return entry[len("formula."):]
     if entry.startswith("note."):
@@ -136,6 +141,7 @@ def _build_arrow_table(
     view_config: Optional[dict] = None,
 ) -> pa.Table:
     type_schema = vault.schema.types[type_name]
+    prop_display = type_schema.property_display or None
     recs = (
         _filter_records(vault, type_name, view_config)
         if view_config is not None
@@ -147,12 +153,12 @@ def _build_arrow_table(
         raw_order = view_config.get("order") or []
         cols = []
         for entry in raw_order:
-            col = _parse_order_entry(str(entry))
+            col = _parse_order_entry(str(entry), prop_display)
             if col == "_record" or col in field_map:
                 cols.append(col)
         group_by = view_config.get("groupBy")
         if group_by:
-            group_col_name = _parse_order_entry(str(group_by.get("property", "")))
+            group_col_name = _parse_order_entry(str(group_by.get("property", "")), prop_display)
             if group_col_name and group_col_name not in cols and group_col_name in field_map:
                 cols.append(group_col_name)
     else:
@@ -181,7 +187,7 @@ def _build_arrow_table(
         pa_sort_keys = []
 
         group_by = view_config.get("groupBy")
-        group_col = _parse_order_entry(str(group_by["property"])) if group_by else None
+        group_col = _parse_order_entry(str(group_by["property"]), prop_display) if group_by else None
         if group_col and group_col in tbl.column_names:
             if pa.types.is_list(tbl.schema.field(group_col).type):
                 logger.warning(
@@ -194,7 +200,7 @@ def _build_arrow_table(
                 pa_sort_keys.append((group_col, group_dir))
 
         for sk in (view_config.get("sort") or []):
-            col = _parse_order_entry(str(sk.get("property", "")))
+            col = _parse_order_entry(str(sk.get("property", "")), prop_display)
             direction = "descending" if str(sk.get("direction", "ASC")).upper() == "DESC" else "ascending"
             if col not in tbl.column_names or col == group_col:
                 continue

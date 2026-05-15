@@ -94,6 +94,7 @@ class TypeSchema:
     name: str
     fields: list[FieldSchema] = field(default_factory=list)
     base_filter: Optional[str] = None
+    property_display: dict[str, str] = field(default_factory=dict, repr=False)
 
 
 def _serialize_filter(filters) -> Optional[str]:
@@ -168,9 +169,16 @@ class Schema:
             if not base_file.exists():
                 continue
             data = yaml.safe_load(base_file.read_text(encoding="utf-8")) or {}
+            properties = data.get("properties") or {}
+            prop_display: dict[str, str] = {}
+            for prop_path, config in properties.items():
+                if isinstance(config, dict) and "displayName" in config:
+                    prop_display[prop_path] = config["displayName"]
+            type_schema.property_display = prop_display
             for formula_name, expr in (data.get("formulas") or {}).items():
+                display_name = prop_display.get(f"formula.{formula_name}", formula_name)
                 type_schema.fields.append(
-                    FieldSchema(name=formula_name, type=FieldType.FORMULA, formula=str(expr))
+                    FieldSchema(name=display_name, type=FieldType.FORMULA, formula=str(expr))
                 )
             raw_filter = data.get("filters")
             if raw_filter:
@@ -212,6 +220,7 @@ class Schema:
             "types": {
                 type_name: {
                     "base_filter": type_schema.base_filter,
+                    "property_display": type_schema.property_display or None,
                     "fields": [
                         {
                             "name": f.name,
@@ -253,5 +262,9 @@ class Schema:
                 )
                 for f in fields_data
             ]
-            schema.types[type_name] = TypeSchema(name=type_name, fields=fields, base_filter=base_filter)
+            prop_display = type_data.get("property_display") or {} if isinstance(type_data, dict) else {}
+            schema.types[type_name] = TypeSchema(
+                name=type_name, fields=fields, base_filter=base_filter,
+                property_display=prop_display,
+            )
         return schema
