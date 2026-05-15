@@ -28,7 +28,7 @@ def parse_wikilink(value: str) -> Optional[tuple[str, str]]:
     if not m:
         return None
     parts = m.group(1).split("/")
-    return (parts[0], parts[1]) if len(parts) == 2 else None
+    return (parts[-2], parts[-1]) if len(parts) >= 2 else None
 
 
 def is_wikilink(value: str) -> bool:
@@ -40,7 +40,7 @@ def wikilink_target_folder(value: str) -> Optional[str]:
     if not m:
         return None
     parts = m.group(1).split("/")
-    return parts[0] if len(parts) > 1 else None
+    return parts[-2] if len(parts) >= 2 else None
 
 
 def parse_wikilink_name(value: str) -> Optional[str]:

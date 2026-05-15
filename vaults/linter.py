@@ -1,26 +1,56 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections import defaultdict, deque
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 from .syntax import BasesCompiler
 from .schema import FieldSchema, FieldType
+from .links import LINK_TYPES, iter_link_names, parse_wikilink, wikilink_target_folder
 
 if TYPE_CHECKING:
     from .vault import Vault
 
 _FORMULA_DEP_RE = re.compile(r"\bformula\.(\w+)")
 _NOTE_REF_RE = re.compile(r"\bnote\.(\w+)")
+_CROSS_PLATFORM_INVALID = re.compile(r'[<>:"/\\|?*]')
+
+RULES: dict[str, str] = {
+    "S-1": "Missing .base file for a type folder",
+    "S-2": "Bases folder not found in vault root",
+    "S-3": "Base file without matching type folder",
+    "S-4": "Non-record file or subdirectory inside a type folder",
+    "S-5": "Cross-platform incompatible file or folder name",
+    "R-1": "Field not present across all records of a type",
+    "R-3": "Links in one field point to multiple target folders",
+    "R-4": "Link targets a folder outside known types",
+    "F-1": "Formula not translatable — possibly malformed in source",
+    "F-2": "Formula references an unknown field",
+    "F-3": "Circular dependency between formula fields",
+    "F-4": "Formula output type inconsistent across records",
+    "R-5": "Paired link field has missing backlinks in source files",
+}
 
 
 @dataclass
 class LintViolation:
-    severity: str  # "error" | "warning"
+    severity: str  # "error" | "warning" | "suggestion"
     message: str
+    rule: Optional[str] = None
     type_name: Optional[str] = None
     field_name: Optional[str] = None
+    details: Optional[dict] = None
+
+    def __str__(self) -> str:
+        header = f"[{self.rule}] {RULES.get(self.rule, '')}" if self.rule else ""
+        parts = [header, self.message] if header else [self.message]
+        return " — ".join(parts)
+
+    def __repr__(self) -> str:
+        return self.__str__()
 
 
 def _topo_sort_formulas(
@@ -54,33 +84,259 @@ def _topo_sort_formulas(
     return ordered, cyclic
 
 
+def _is_cross_platform_safe(name: str) -> bool:
+    if _CROSS_PLATFORM_INVALID.search(name):
+        return False
+    if unicodedata.normalize("NFC", name) != name:
+        return False
+    return True
+
+
 class Linter:
-    def __init__(self, vault: Vault) -> None:
+    def __init__(self, vault: Vault, *, homogeneity_threshold: float = 0.0) -> None:
         self.vault = vault
+        self.homogeneity_threshold = homogeneity_threshold
 
     def lint(self) -> list[LintViolation]:
         violations: list[LintViolation] = []
-        compiler = BasesCompiler()
+        violations.extend(self._check_structure())
+        violations.extend(self._check_records())
+        violations.extend(self._check_formulas())
+        return violations
 
-        for type_name, type_schema in self.vault.schema.types.items():
-            known_fields = {f.name for f in type_schema.fields if f.type != FieldType.FORMULA}
-            formula_fields = [f for f in type_schema.fields if f.type == FieldType.FORMULA]
+    # -- Structure checks (S-*) -----------------------------------------------
 
-            if self.vault.path is not None:
-                base_file = self.vault.path / self.vault.schema.bases_folder / f"{type_name}.base"
-                if not base_file.exists():
+    def _check_structure(self) -> list[LintViolation]:
+        violations: list[LintViolation] = []
+        if self.vault.path is None:
+            return violations
+
+        bases_dir = self.vault.path / self.vault.schema.bases_folder
+        data_dir = self.vault.path / self.vault.schema.data_folder
+
+        # S-2: bases folder missing
+        if not bases_dir.exists():
+            violations.append(LintViolation(
+                severity="warning",
+                message="Bases folder not found",
+                rule="S-2",
+            ))
+        else:
+            # S-1: type folder without matching .base file
+            for type_name in self.vault.schema.types:
+                if not (bases_dir / f"{type_name}.base").exists():
                     violations.append(LintViolation(
                         severity="error",
                         message=f"Missing .base file for type '{type_name}'",
+                        rule="S-1",
                         type_name=type_name,
                     ))
+
+            # S-3: .base file without matching type folder
+            for base_file in sorted(bases_dir.glob("*.base")):
+                if base_file.stem not in self.vault.schema.types:
+                    violations.append(LintViolation(
+                        severity="warning",
+                        message=f"Base file '{base_file.name}' has no matching type folder",
+                        rule="S-3",
+                    ))
+
+        # S-4: non-.md files or subdirectories in type folders
+        for type_name in self.vault.schema.types:
+            type_dir = data_dir / type_name
+            if not type_dir.exists():
+                continue
+            for child in sorted(type_dir.iterdir()):
+                if child.is_dir():
+                    violations.append(LintViolation(
+                        severity="warning",
+                        message=f"Subdirectory '{child.name}' inside type folder",
+                        rule="S-4",
+                        type_name=type_name,
+                    ))
+                elif child.suffix != ".md":
+                    violations.append(LintViolation(
+                        severity="warning",
+                        message=f"Non-record file '{child.name}' inside type folder",
+                        rule="S-4",
+                        type_name=type_name,
+                    ))
+
+        # S-5: cross-platform filename compatibility
+        for type_name in self.vault.schema.types:
+            if not _is_cross_platform_safe(type_name):
+                violations.append(LintViolation(
+                    severity="warning",
+                    message=f"Type name '{type_name}' contains cross-platform incompatible characters",
+                    rule="S-5",
+                    type_name=type_name,
+                ))
+            for rec in self.vault.records.get(type_name, []):
+                if not _is_cross_platform_safe(rec.name):
+                    violations.append(LintViolation(
+                        severity="warning",
+                        message=f"Record name '{rec.name}' contains cross-platform incompatible characters",
+                        rule="S-5",
+                        type_name=type_name,
+                    ))
+
+        return violations
+
+    # -- Record checks (R-*) --------------------------------------------------
+
+    def _check_records(self) -> list[LintViolation]:
+        violations: list[LintViolation] = []
+
+        for type_name, type_schema in self.vault.schema.types.items():
+            recs = self.vault.records.get(type_name, [])
+            total = len(recs)
+
+            # R-1: field homogeneity
+            if total > 0:
+                non_formula_fields = [f for f in type_schema.fields if f.type != FieldType.FORMULA]
+                for f in non_formula_fields:
+                    has = [r.name for r in recs if f.name in r.fields]
+                    missing = [r.name for r in recs if f.name not in r.fields]
+                    proportion = len(has) / total
+                    minority = min(proportion, 1 - proportion)
+                    if minority > self.homogeneity_threshold:
+                        pct = round(proportion * 100, 1)
+                        details = {"present": sorted(has), "missing": sorted(missing)}
+                        violations.append(LintViolation(
+                            severity="warning",
+                            message=f"Field '{f.name}' present in {pct}% of records ({len(has)}/{total})",
+                            rule="R-1",
+                            type_name=type_name,
+                            field_name=f.name,
+                            details=details,
+                        ))
+
+            # R-3 / R-4: collect link violations per field
+            known_types = set(self.vault.schema.types.keys())
+            # R-4 detail: {type: {record: {field: [links]}}}
+            folder_violations: dict[str, dict[str, list[str]]] = {}
+
+            for f in type_schema.fields:
+                if f.type not in LINK_TYPES:
+                    continue
+
+                # Collect links by target folder: {folder: [record_names]}
+                by_folder: dict[str, list[str]] = {}
+                for rec in recs:
+                    value = rec.fields.get(f.name)
+                    if value is None:
+                        continue
+                    items = value if isinstance(value, list) else [value]
+                    for item in items:
+                        if not isinstance(item, str):
+                            continue
+                        folder = wikilink_target_folder(item)
+                        if folder is None:
+                            continue
+                        by_folder.setdefault(folder, []).append(rec.name)
+                        # R-4: link targets a folder outside known types
+                        if folder not in known_types:
+                            folder_violations.setdefault(rec.name, {}).setdefault(f.name, []).append(item)
+
+                # R-3: field has links pointing to more than one folder
+                if len(by_folder) > 1:
+                    violations.append(LintViolation(
+                        severity="warning",
+                        message=f"Field '{f.name}' has links to multiple folders: {sorted(by_folder.keys())}",
+                        rule="R-3",
+                        type_name=type_name,
+                        field_name=f.name,
+                        details=by_folder,
+                    ))
+
+            if folder_violations:
+                violations.append(LintViolation(
+                    severity="warning",
+                    message="Links target folders outside known types",
+                    rule="R-4",
+                    type_name=type_name,
+                    details={type_name: folder_violations},
+                ))
+
+            # F-4: formula output type inconsistent
+            formula_fields = [f for f in type_schema.fields if f.type == FieldType.FORMULA]
+            for f in formula_fields:
+                if f.output_type == FieldType.UNKNOWN:
+                    non_null = [r.fields.get(f.name) for r in recs if r.fields.get(f.name) is not None]
+                    if non_null:
+                        violations.append(LintViolation(
+                            severity="warning",
+                            message="Formula output type is inconsistent across records",
+                            rule="F-4",
+                            type_name=type_name,
+                            field_name=f.name,
+                        ))
+
+        # R-5: incomplete pairs — backlinks missing in source files
+        for first, second in self.vault.relationship_pairs:
+            type_a, field_a = first.split(".", 1)
+            type_b, field_b = second.split(".", 1)
+
+            # Edges from side A: a → b
+            edges_a: set[tuple[str, str]] = set()
+            for rec in self.vault.records.get(type_a, []):
+                for name in iter_link_names(rec.fields.get(field_a)):
+                    edges_a.add((rec.name, name))
+
+            # Edges from side B: a ← b (inverted to match A's direction)
+            edges_b: set[tuple[str, str]] = set()
+            for rec in self.vault.records.get(type_b, []):
+                for name in iter_link_names(rec.fields.get(field_b)):
+                    edges_b.add((name, rec.name))
+
+            # Missing on side A: edges only asserted by B
+            missing_a: dict[str, list[str]] = {}
+            for a_name, b_name in sorted(edges_b - edges_a):
+                missing_a.setdefault(a_name, []).append(b_name)
+            if missing_a:
+                total = sum(len(v) for v in missing_a.values())
+                violations.append(LintViolation(
+                    severity="suggestion",
+                    message=f"{first}: {total} backlinks missing across {len(missing_a)} records",
+                    rule="R-5",
+                    type_name=type_a,
+                    field_name=field_a,
+                    details=missing_a,
+                ))
+
+            # Missing on side B: edges only asserted by A
+            missing_b: dict[str, list[str]] = {}
+            for a_name, b_name in sorted(edges_a - edges_b):
+                missing_b.setdefault(b_name, []).append(a_name)
+            if missing_b:
+                total = sum(len(v) for v in missing_b.values())
+                violations.append(LintViolation(
+                    severity="suggestion",
+                    message=f"{second}: {total} backlinks missing across {len(missing_b)} records",
+                    rule="R-5",
+                    type_name=type_b,
+                    field_name=field_b,
+                    details=missing_b,
+                ))
+
+        return violations
+
+    # -- Formula checks (F-*) -------------------------------------------------
+
+    def _check_formulas(self) -> list[LintViolation]:
+        violations: list[LintViolation] = []
+        compiler = BasesCompiler()
+        for type_name, type_schema in self.vault.schema.types.items():
+            known_fields = {f.name for f in type_schema.fields if f.type != FieldType.FORMULA}
+            formula_fields = [f for f in type_schema.fields if f.type == FieldType.FORMULA]
 
             for f in formula_fields:
                 fn = compiler.translate(f.formula or "")
                 if hasattr(fn, "translation_error"):
                     violations.append(LintViolation(
-                        severity="error",
+                        severity="warning",
                         message=f"Untranslatable formula: {fn.translation_error}",
+                        rule="F-1",
                         type_name=type_name,
                         field_name=f.name,
                     ))
@@ -90,17 +346,7 @@ class Linter:
                         violations.append(LintViolation(
                             severity="warning",
                             message=f"Formula references unknown field 'note.{ref}'",
-                            type_name=type_name,
-                            field_name=f.name,
-                        ))
-
-                if f.output_type == FieldType.UNKNOWN:
-                    recs = self.vault.records.get(type_name, [])
-                    non_null = [r.fields.get(f.name) for r in recs if r.fields.get(f.name) is not None]
-                    if non_null:
-                        violations.append(LintViolation(
-                            severity="warning",
-                            message=f"Formula output type is inconsistent across records",
+                            rule="F-2",
                             type_name=type_name,
                             field_name=f.name,
                         ))
@@ -110,7 +356,8 @@ class Linter:
                 for f in cyclic:
                     violations.append(LintViolation(
                         severity="error",
-                        message=f"Cyclic formula dependency",
+                        message="Cyclic formula dependency",
+                        rule="F-3",
                         type_name=type_name,
                         field_name=f.name,
                     ))

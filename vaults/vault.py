@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _VALID_DANGLING_REFS = ("drop", "stub")
+_VALID_UNTRANSLATABLE = ("drop", "error")
 
 
 def _compute_fingerprint(data_root: Path) -> str:
@@ -39,6 +40,7 @@ class Vault:
     records: dict[str, list[Record]] = field(default_factory=dict)
     path: Optional[Path] = None
     relationship_pairs: list[tuple[str, str]] = field(default_factory=list)
+    violations: list = field(default_factory=list, repr=False)
     fingerprint: str = field(default="", repr=False)
 
     @property
@@ -65,8 +67,8 @@ class Vault:
         data_root = self.path / self.schema.data_folder
         return _compute_fingerprint(data_root) != self.fingerprint
 
-    def lint(self) -> list[LintViolation]:
-        return Linter(self).lint()
+    def lint(self, *, homogeneity_threshold: float = 0.0) -> list[LintViolation]:
+        return Linter(self, homogeneity_threshold=homogeneity_threshold).lint()
 
     @classmethod
     def from_vault(
@@ -77,11 +79,14 @@ class Vault:
         relationship_pairs: Optional[list[tuple[str, str]]] = None,
         ignore_empty: bool = False,
         dangling_refs: str = "drop",
+        untranslatable_formulas: str = "drop",
         apply_base_filters: bool = False,
         expand_to_lists: bool = True,
     ) -> "Vault":
         if dangling_refs not in _VALID_DANGLING_REFS:
             raise ValueError(f"dangling_refs must be one of {_VALID_DANGLING_REFS}; got {dangling_refs!r}")
+        if untranslatable_formulas not in _VALID_UNTRANSLATABLE:
+            raise ValueError(f"untranslatable_formulas must be one of {_VALID_UNTRANSLATABLE}; got {untranslatable_formulas!r}")
 
         path = Path(path).resolve()
         data_root = path / data_folder
@@ -113,8 +118,6 @@ class Vault:
                         type_name,
                     )
 
-        records = apply_dangling_refs(dangling_refs, schema, records)
-
         frozen_now = datetime.now()
         compiler = BasesCompiler()
 
@@ -128,6 +131,14 @@ class Vault:
 
             for f in ordered:
                 fn = compiler.translate(f.formula)
+                if hasattr(fn, "translation_error"):
+                    if untranslatable_formulas == "error":
+                        raise ValueError(
+                            f"Untranslatable formula '{f.name}' on type '{type_name}': {fn.translation_error}"
+                        )
+                    for rec in recs:
+                        rec.fields[f.name] = None
+                    continue
                 results = []
                 for rec in recs:
                     ctx = EvalContext(record=rec, vault=None, base_path=base_path, now=frozen_now)
@@ -170,6 +181,18 @@ class Vault:
             relationship_pairs=relationship_pairs or [],
             fingerprint=_compute_fingerprint(data_root),
         )
+
+        vault.violations = vault.lint()
+
+        if vault.violations:
+            from collections import Counter
+            from .linter import RULES
+            counts = Counter(v.rule for v in vault.violations)
+            parts = [f"{n}x {RULES.get(rule, rule)}" for rule, n in counts.items()]
+            logger.warning("Vault loaded with %d violation(s): %s", len(vault.violations), "; ".join(parts))
+
+        records = apply_dangling_refs(dangling_refs, schema, records)
+        vault.records = records
         vault._resolve_pairs(expand_to_lists=expand_to_lists)
         return vault
 
