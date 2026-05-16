@@ -1,4 +1,4 @@
-"""Tests for Schema.from_vault() on malformed or edge-case vault structures.
+"""Tests for Schema._from_vault() on malformed or edge-case vault structures.
 
 Fixture layout:
   malformed_vault/data/Projekte/
@@ -19,7 +19,7 @@ FIXTURE = Path(__file__).parent / "fixtures" / "malformed_vault"
 
 @pytest.fixture(scope="module")
 def schema():
-    return Schema.from_vault(FIXTURE)
+    return Schema._from_vault(FIXTURE)
 
 
 # --- Mixed link targets ---
@@ -60,12 +60,12 @@ def test_empty_type_folder_produces_no_fields(schema):
 
 
 def test_ignore_empty_excludes_empty_type():
-    s = Schema.from_vault(FIXTURE, ignore_empty=True)
+    s = Schema._from_vault(FIXTURE, ignore_empty=True)
     assert "Akteure" not in s.types
 
 
 def test_ignore_empty_keeps_populated_types():
-    s = Schema.from_vault(FIXTURE, ignore_empty=True)
+    s = Schema._from_vault(FIXTURE, ignore_empty=True)
     assert "Projekte" in s.types
 
 

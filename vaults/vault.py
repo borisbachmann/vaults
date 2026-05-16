@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Optional
 
 import frontmatter
 
-from .syntax import BasesCompiler, EvalContext
+from .syntax import EvalContext
 from .schema import FieldSchema, FieldType, Schema, infer_field_type
 from .record import Record
 from .links import apply_dangling_refs, resolve_pairs
@@ -90,7 +90,7 @@ class Vault:
 
         path = Path(path).resolve()
         data_root = path / data_folder
-        schema = Schema.from_vault(path, data_folder=data_folder, bases_folder=bases_folder, ignore_empty=ignore_empty)
+        schema = Schema._from_vault(path, data_folder=data_folder, bases_folder=bases_folder, ignore_empty=ignore_empty)
 
         records: dict[str, list[Record]] = {}
         for type_name, type_schema in schema.types.items():
@@ -119,7 +119,6 @@ class Vault:
                     )
 
         frozen_now = datetime.now()
-        compiler = BasesCompiler()
 
         for type_name, type_schema in schema.types.items():
             formula_fields = [f for f in type_schema.fields if f.type == FieldType.FORMULA]
@@ -130,11 +129,10 @@ class Vault:
             ordered, cyclic = _topo_sort_formulas(formula_fields)
 
             for f in ordered:
-                fn = compiler.translate(f.formula)
-                if hasattr(fn, "translation_error"):
+                if hasattr(f.compiled, "translation_error"):
                     if untranslatable_formulas == "error":
                         raise ValueError(
-                            f"Untranslatable formula '{f.name}' on type '{type_name}': {fn.translation_error}"
+                            f"Untranslatable formula '{f.name}' on type '{type_name}': {f.compiled.translation_error}"
                         )
                     for rec in recs:
                         rec.fields[f.name] = None
@@ -143,7 +141,7 @@ class Vault:
                 for rec in recs:
                     ctx = EvalContext(record=rec, vault=None, base_path=base_path, now=frozen_now)
                     try:
-                        result = fn(ctx)
+                        result = f.compiled(ctx)
                     except Exception:
                         result = None
                     rec.fields[f.name] = result
@@ -156,16 +154,15 @@ class Vault:
 
         if apply_base_filters:
             for type_name, type_schema in schema.types.items():
-                if not type_schema.base_filter:
+                if not type_schema.compiled_filter:
                     continue
                 base_path = path / bases_folder / f"{type_name}.base"
-                fn = compiler.translate_filter(type_schema.base_filter)
                 before = records.get(type_name, [])
                 after = []
                 for rec in before:
                     ctx = EvalContext(record=rec, vault=None, base_path=base_path, now=frozen_now)
                     try:
-                        keep = fn(ctx)
+                        keep = type_schema.compiled_filter(ctx)
                     except Exception:
                         keep = True
                     if keep:

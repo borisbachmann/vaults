@@ -1,4 +1,4 @@
-"""Tests for Schema.from_vault() (Step 3)."""
+"""Tests for Schema._from_vault() (Step 3)."""
 from pathlib import Path
 
 import pytest
@@ -10,7 +10,7 @@ FIXTURE = Path(__file__).parent / "fixtures" / "sample_vault"
 
 @pytest.fixture(scope="module")
 def schema():
-    return Schema.from_vault(FIXTURE)
+    return Schema._from_vault(FIXTURE)
 
 
 def test_types_discovered(schema):
@@ -27,7 +27,7 @@ def test_folder_conventions_stored(schema):
 
 
 def test_custom_folder_names():
-    s = Schema.from_vault(FIXTURE, data_folder="data", bases_folder="views")
+    s = Schema._from_vault(FIXTURE, data_folder="data", bases_folder="views")
     assert s.bases_folder == "views"
 
 

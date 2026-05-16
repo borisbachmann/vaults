@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import datetime
-import json
 from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, Optional
 
 import frontmatter
 import yaml
@@ -81,6 +80,7 @@ class FieldSchema:
     link_target: Optional[str] = None
     formula: Optional[str] = None
     output_type: Optional[FieldType] = None
+    compiled: Optional[Callable[..., Any]] = field(default=None, repr=False)
 
     @property
     def effective_type(self) -> "FieldType":
@@ -94,6 +94,7 @@ class TypeSchema:
     name: str
     fields: list[FieldSchema] = field(default_factory=list)
     base_filter: Optional[str] = None
+    compiled_filter: Optional[Callable[..., Any]] = field(default=None, repr=False)
     property_display: dict[str, str] = field(default_factory=dict, repr=False)
 
 
@@ -125,14 +126,17 @@ class Schema:
     bases_folder: str = "bases"
 
     @classmethod
-    def from_vault(
+    def _from_vault(
         cls,
         path: str | Path,
         data_folder: str = "data",
         bases_folder: str = "bases",
         ignore_empty: bool = False,
     ) -> "Schema":
+        from .syntax import BasesCompiler
+
         root = Path(path) / data_folder
+        compiler = BasesCompiler()
 
         schema = cls(data_folder=data_folder, bases_folder=bases_folder)
 
@@ -140,7 +144,6 @@ class Schema:
             if not type_dir.is_dir() or type_dir.name.startswith("_"):
                 continue
 
-            # field_name → list of all values seen across all records
             field_values: dict[str, list] = defaultdict(list)
 
             for md_file in sorted(type_dir.glob("*.md")):
@@ -177,12 +180,19 @@ class Schema:
             type_schema.property_display = prop_display
             for formula_name, expr in (data.get("formulas") or {}).items():
                 display_name = prop_display.get(f"formula.{formula_name}", formula_name)
+                compiled = compiler.translate(str(expr))
                 type_schema.fields.append(
-                    FieldSchema(name=display_name, type=FieldType.FORMULA, formula=str(expr))
+                    FieldSchema(
+                        name=display_name,
+                        type=FieldType.FORMULA,
+                        formula=str(expr),
+                        compiled=compiled,
+                    )
                 )
             raw_filter = data.get("filters")
             if raw_filter:
                 type_schema.base_filter = _serialize_filter(raw_filter)
+                type_schema.compiled_filter = compiler.translate_filter(type_schema.base_filter)
 
         return schema
 
@@ -212,59 +222,3 @@ class Schema:
             "removed_types": removed_types,
             "changed_fields": changed_fields,
         }
-
-    def to_json(self, path: str | Path) -> None:
-        payload = {
-            "data_folder": self.data_folder,
-            "bases_folder": self.bases_folder,
-            "types": {
-                type_name: {
-                    "base_filter": type_schema.base_filter,
-                    "property_display": type_schema.property_display or None,
-                    "fields": [
-                        {
-                            "name": f.name,
-                            "type": f.type.value,
-                            "link_target": f.link_target,
-                            "formula": f.formula,
-                            "output_type": f.output_type.value if f.output_type else None,
-                        }
-                        for f in type_schema.fields
-                    ],
-                }
-                for type_name, type_schema in self.types.items()
-            },
-        }
-        Path(path).write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-
-    @classmethod
-    def from_json(cls, path: str | Path) -> "Schema":
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
-        schema = cls(
-            data_folder=payload.get("data_folder", "data"),
-            bases_folder=payload.get("bases_folder", "bases"),
-        )
-        for type_name, type_data in payload.get("types", {}).items():
-            # Support both old format (list of fields) and new format (dict with fields + base_filter)
-            if isinstance(type_data, list):
-                fields_data = type_data
-                base_filter = None
-            else:
-                fields_data = type_data.get("fields", [])
-                base_filter = type_data.get("base_filter")
-            fields = [
-                FieldSchema(
-                    name=f["name"],
-                    type=FieldType(f["type"]),
-                    link_target=f.get("link_target"),
-                    formula=f.get("formula"),
-                    output_type=FieldType(f["output_type"]) if f.get("output_type") else None,
-                )
-                for f in fields_data
-            ]
-            prop_display = type_data.get("property_display") or {} if isinstance(type_data, dict) else {}
-            schema.types[type_name] = TypeSchema(
-                name=type_name, fields=fields, base_filter=base_filter,
-                property_display=prop_display,
-            )
-        return schema
