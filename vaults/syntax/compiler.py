@@ -172,10 +172,16 @@ class BasesCompiler:
 
         if method == "map":
             transform = self._compile(raw_args[0], errors) if raw_args else (lambda ctx, scope: scope.get("value"))
-            return lambda ctx, scope: [
-                transform(ctx, {**scope, "value": v, "index": i})
-                for i, v in enumerate(_ensure_list(obj_fn(ctx, scope)))
-            ]
+            def _map(ctx, scope, _obj=obj_fn, _tr=transform):
+                result = []
+                for i, v in enumerate(_ensure_list(_obj(ctx, scope))):
+                    item = _tr(ctx, {**scope, "value": v, "index": i})
+                    if isinstance(item, list):
+                        result.extend(item)
+                    else:
+                        result.append(item)
+                return result
+            return _map
 
         if method == "reduce":
             combine = self._compile(raw_args[0], errors) if raw_args else (lambda ctx, scope: scope.get("value"))

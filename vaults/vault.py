@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from .accessors.db import DbAccessor
     from .accessors.dfs import DfsAccessor
     from .accessors.graph import GraphAccessor
+    from .enrichment import Enrichment
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,8 @@ class Vault:
     relationship_pairs: list[tuple[str, str]] = field(default_factory=list)
     violations: list = field(default_factory=list, repr=False)
     fingerprint: str = field(default="", repr=False)
+    _load_kwargs: dict = field(default_factory=dict, repr=False)
+    _backlinks_index: Optional[dict] = field(default=None, repr=False, compare=False, init=False)
 
     @property
     def db(self) -> "DbAccessor":
@@ -58,17 +61,56 @@ class Vault:
         from .accessors.graph import GraphAccessor
         return GraphAccessor(self)
 
+    @property
+    def enrichment(self) -> "Enrichment":
+        from .enrichment import Enrichment
+        return Enrichment(self)
+
     def _resolve_pairs(self, expand_to_lists: bool = True) -> None:
         resolve_pairs(self, expand_to_lists=expand_to_lists)
 
+    @property
     def is_stale(self) -> bool:
         if self.path is None:
             return False
         data_root = self.path / self.schema.data_folder
         return _compute_fingerprint(data_root) != self.fingerprint
 
+    def reload(self) -> "Vault":
+        new = Vault.from_vault(self.path, **self._load_kwargs)
+        self.schema = new.schema
+        self.records = new.records
+        self.violations = new.violations
+        self.fingerprint = new.fingerprint
+        return self
+
     def lint(self, *, homogeneity_threshold: float = 0.0) -> list[LintViolation]:
         return Linter(self, homogeneity_threshold=homogeneity_threshold).lint()
+
+    def _get_backlinks_index(self) -> "dict[str, list[str]]":
+        if self._backlinks_index is None:
+            self._backlinks_index = self._build_backlinks_index()
+        return self._backlinks_index
+
+    def _build_backlinks_index(self) -> "dict[str, list[str]]":
+        """Build record_name → [wikilink, ...] index for all cross-record links."""
+        from .links import parse_wikilink_name
+        index: dict[str, list[str]] = {}
+        for type_name, recs in self.records.items():
+            for rec in recs:
+                back_wikilink = f"[[{type_name}/{rec.name}]]"
+                seen_targets: set[str] = set()
+                for v in rec.fields.values():
+                    items = v if isinstance(v, list) else [v]
+                    for item in items:
+                        if isinstance(item, str):
+                            name = parse_wikilink_name(item)
+                            if name and name not in seen_targets:
+                                seen_targets.add(name)
+                                index.setdefault(name, [])
+                                if back_wikilink not in index[name]:
+                                    index[name].append(back_wikilink)
+        return index
 
     @classmethod
     def from_vault(
@@ -120,6 +162,11 @@ class Vault:
 
         frozen_now = datetime.now()
 
+        # Proto-vault gives formula evaluation access to the full record graph
+        # (needed for file.backlinks and other cross-record lookups) before the
+        # real Vault object is constructed.
+        _proto = cls(schema=schema, records=records, path=path)
+
         for type_name, type_schema in schema.types.items():
             formula_fields = [f for f in type_schema.fields if f.type == FieldType.FORMULA]
             if not formula_fields:
@@ -137,11 +184,20 @@ class Vault:
                     for rec in recs:
                         rec.fields[f.name] = None
                     continue
+                from .syntax.runtime import _FileProxy as _FP
+
+                def _serialize(v: Any) -> Any:
+                    if isinstance(v, _FP):
+                        return f"[[{v._record.type_schema.name}/{v._record.name}]]"
+                    if isinstance(v, list):
+                        return [_serialize(item) for item in v]
+                    return v
+
                 results = []
                 for rec in recs:
-                    ctx = EvalContext(record=rec, vault=None, base_path=base_path, now=frozen_now)
+                    ctx = EvalContext(record=rec, vault=_proto, base_path=base_path, now=frozen_now)
                     try:
-                        result = f.compiled(ctx)
+                        result = _serialize(f.compiled(ctx))
                     except Exception:
                         result = None
                     rec.fields[f.name] = result
@@ -160,7 +216,7 @@ class Vault:
                 before = records.get(type_name, [])
                 after = []
                 for rec in before:
-                    ctx = EvalContext(record=rec, vault=None, base_path=base_path, now=frozen_now)
+                    ctx = EvalContext(record=rec, vault=_proto, base_path=base_path, now=frozen_now)
                     try:
                         keep = type_schema.compiled_filter(ctx)
                     except Exception:
@@ -177,6 +233,16 @@ class Vault:
             path=path,
             relationship_pairs=relationship_pairs or [],
             fingerprint=_compute_fingerprint(data_root),
+            _load_kwargs={
+                "data_folder": data_folder,
+                "bases_folder": bases_folder,
+                "relationship_pairs": relationship_pairs,
+                "ignore_empty": ignore_empty,
+                "dangling_refs": dangling_refs,
+                "untranslatable_formulas": untranslatable_formulas,
+                "apply_base_filters": apply_base_filters,
+                "expand_to_lists": expand_to_lists,
+            },
         )
 
         vault.violations = vault.lint()

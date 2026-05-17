@@ -95,6 +95,16 @@ class _FileProxy:
                     out.append(v)
         return out
 
+    @property
+    def backlinks(self) -> list:
+        """Wikilink strings for all vault records that contain a link to this file."""
+        if not self._record or not self._vault:
+            return []
+        target = self._record.name
+        self_wikilink = f"[[{self._record.type_schema.name}/{target}]]"
+        candidates = self._vault._get_backlinks_index().get(target, [])
+        return [wl for wl in candidates if wl != self_wikilink]
+
     def hasTag(self, *values: str) -> bool:
         return any(v in self.tags for v in values)
 
@@ -110,8 +120,8 @@ class _FileProxy:
         return any(str(other) in str(lk) for lk in self.links)
 
     def asLink(self, display: str | None = None) -> str:
-        stem = self._path.stem if self._path else ""
-        return f"[[{stem}|{display}]]" if display else f"[[{stem}]]"
+        name = self._record.name if self._record else (self._path.stem if self._path else "")
+        return f"[[{name}|{display}]]" if display else f"[[{name}]]"
 
 
 class _ThisFileProxy:
@@ -388,6 +398,15 @@ def _to_number(val: Any) -> int | float | None:
 _WIKILINK_RESOLVE_RE = re.compile(r"^\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]$")
 
 
+def _link_name(value: str) -> str | None:
+    """Return the record name (last path segment) from a wikilink string, or None."""
+    m = _WIKILINK_RESOLVE_RE.match(str(value).strip())
+    if not m:
+        return None
+    parts = m.group(1).split("/")
+    return parts[-1]
+
+
 def _resolve_link(link_str: Any, ctx: EvalContext) -> _FileProxy | None:
     if not link_str or not ctx.vault:
         return None
@@ -408,6 +427,19 @@ def _resolve_link(link_str: Any, ctx: EvalContext) -> _FileProxy | None:
     return None
 
 
+def _link_contains(obj: Any, search: Any) -> bool:
+    """Membership check that compares wikilinks by target name, not raw string."""
+    if not isinstance(obj, (str, list)):
+        return False
+    search_name = _link_name(str(search)) if isinstance(search, str) else None
+    if search_name is not None:
+        if isinstance(obj, list):
+            return any(isinstance(item, str) and _link_name(item) == search_name for item in obj)
+        item_name = _link_name(obj)
+        return item_name == search_name if item_name is not None else str(search) in obj
+    return search in obj
+
+
 def _str_replace(obj: Any, args: list) -> Any:
     if not isinstance(obj, str) or not args:
         return obj
@@ -423,7 +455,7 @@ def _str_replace(obj: Any, args: list) -> Any:
 
 _METHODS: dict[str, Callable[..., Any]] = {
     # String
-    "contains":   lambda obj, args, ctx: args[0] in obj if isinstance(obj, (str, list)) and args else False,
+    "contains":   lambda obj, args, ctx: _link_contains(obj, args[0]) if args else False,
     "replace":    lambda obj, args, ctx: _str_replace(obj, args),
     "split":      lambda obj, args, ctx: obj.split(*args) if isinstance(obj, str) else [obj],
     "slice":      lambda obj, args, ctx: obj[int(args[0]): int(args[1]) if len(args) > 1 else None],
