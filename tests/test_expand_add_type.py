@@ -1,4 +1,4 @@
-"""Tests for Enrichment.add_type (Phase 3)."""
+"""Tests for Expander.add_type."""
 import pytest
 from pathlib import Path
 
@@ -17,21 +17,21 @@ def tmp_vault(tmp_path):
 
 def test_add_type_returns_results(tmp_vault):
     records = [{"name": "Alpha", "color": "red"}, {"name": "Beta", "color": "blue"}]
-    results = tmp_vault.enrichment.add_type("Tags", records, filename_col="name")
+    results = tmp_vault.expand.add_type("Tags", records, filename_col="name")
     assert len(results) == 2
     assert all(r.status == "processed" for r in results)
     assert {r.filename for r in results} == {"Alpha", "Beta"}
 
 
 def test_add_type_creates_folder(tmp_vault, tmp_path):
-    tmp_vault.enrichment.add_type(
+    tmp_vault.expand.add_type(
         "Tags", [{"name": "A", "color": "red"}], filename_col="name"
     )
     assert (tmp_path / "data" / "Tags").is_dir()
 
 
 def test_add_type_writes_files(tmp_vault, tmp_path):
-    tmp_vault.enrichment.add_type(
+    tmp_vault.expand.add_type(
         "Tags", [{"name": "A", "color": "red"}], filename_col="name"
     )
     assert (tmp_path / "data" / "Tags" / "A.md").exists()
@@ -40,7 +40,7 @@ def test_add_type_writes_files(tmp_vault, tmp_path):
 
 
 def test_add_type_vault_reloaded(tmp_vault):
-    tmp_vault.enrichment.add_type(
+    tmp_vault.expand.add_type(
         "Tags", [{"name": "A", "color": "red"}], filename_col="name"
     )
     assert "Tags" in tmp_vault.records
@@ -48,7 +48,7 @@ def test_add_type_vault_reloaded(tmp_vault):
 
 
 def test_add_type_creates_base_file(tmp_vault, tmp_path):
-    tmp_vault.enrichment.add_type(
+    tmp_vault.expand.add_type(
         "Tags", [{"name": "A", "color": "red"}], filename_col="name"
     )
     base_path = tmp_path / "bases" / "Tags.base"
@@ -56,7 +56,7 @@ def test_add_type_creates_base_file(tmp_vault, tmp_path):
 
 
 def test_add_type_base_has_filter(tmp_vault, tmp_path):
-    tmp_vault.enrichment.add_type(
+    tmp_vault.expand.add_type(
         "Tags", [{"name": "A"}], filename_col="name"
     )
     content = (tmp_path / "bases" / "Tags.base").read_text()
@@ -64,7 +64,7 @@ def test_add_type_base_has_filter(tmp_vault, tmp_path):
 
 
 def test_add_type_base_has_table_view(tmp_vault, tmp_path):
-    tmp_vault.enrichment.add_type(
+    tmp_vault.expand.add_type(
         "Tags", [{"name": "A", "color": "red"}], filename_col="name"
     )
     content = (tmp_path / "bases" / "Tags.base").read_text()
@@ -73,7 +73,7 @@ def test_add_type_base_has_table_view(tmp_vault, tmp_path):
 
 
 def test_add_type_base_order_has_file_name(tmp_vault, tmp_path):
-    tmp_vault.enrichment.add_type(
+    tmp_vault.expand.add_type(
         "Tags", [{"name": "A", "color": "red"}], filename_col="name"
     )
     content = (tmp_path / "bases" / "Tags.base").read_text()
@@ -81,7 +81,7 @@ def test_add_type_base_order_has_file_name(tmp_vault, tmp_path):
 
 
 def test_add_type_base_order_includes_props(tmp_vault, tmp_path):
-    tmp_vault.enrichment.add_type(
+    tmp_vault.expand.add_type(
         "Tags", [{"name": "A", "color": "red", "priority": "high"}], filename_col="name"
     )
     content = (tmp_path / "bases" / "Tags.base").read_text()
@@ -91,7 +91,7 @@ def test_add_type_base_order_includes_props(tmp_vault, tmp_path):
 
 def test_add_type_base_file_name_before_props(tmp_vault, tmp_path):
     """file.name must appear before any other properties in the order list."""
-    tmp_vault.enrichment.add_type(
+    tmp_vault.expand.add_type(
         "Tags", [{"name": "A", "color": "red"}], filename_col="name"
     )
     content = (tmp_path / "bases" / "Tags.base").read_text()
@@ -102,12 +102,12 @@ def test_add_type_base_file_name_before_props(tmp_vault, tmp_path):
 
 def test_add_type_preserves_input_order(tmp_vault):
     records = [{"name": "Z"}, {"name": "A"}, {"name": "M"}]
-    results = tmp_vault.enrichment.add_type("Tags", records, filename_col="name")
+    results = tmp_vault.expand.add_type("Tags", records, filename_col="name")
     assert [r.filename for r in results] == ["Z", "A", "M"]
 
 
 def test_add_type_null_renders_as_bare_key(tmp_vault, tmp_path):
-    tmp_vault.enrichment.add_type(
+    tmp_vault.expand.add_type(
         "Tags", [{"name": "A", "optional": None}], filename_col="name"
     )
     content = (tmp_path / "data" / "Tags" / "A.md").read_text()
@@ -119,14 +119,14 @@ def test_add_type_null_renders_as_bare_key(tmp_vault, tmp_path):
 
 def test_add_type_raises_if_type_exists(tmp_vault):
     with pytest.raises(ValueError, match="already exists"):
-        tmp_vault.enrichment.add_type(
+        tmp_vault.expand.add_type(
             "Items", [{"name": "X"}], filename_col="name"
         )
 
 
 def test_add_type_raises_writes_nothing_if_type_exists(tmp_vault, tmp_path):
     with pytest.raises(ValueError):
-        tmp_vault.enrichment.add_type(
+        tmp_vault.expand.add_type(
             "Items", [{"name": "X"}], filename_col="name"
         )
     assert not (tmp_path / "data" / "Items" / "X.md").exists()
@@ -136,14 +136,14 @@ def test_add_type_raises_writes_nothing_if_type_exists(tmp_vault, tmp_path):
 
 def test_add_type_missing_filename_error(tmp_vault):
     with pytest.raises(ValueError, match="missing value"):
-        tmp_vault.enrichment.add_type(
+        tmp_vault.expand.add_type(
             "Tags", [{"name": None}], filename_col="name"
         )
 
 
 def test_add_type_missing_filename_skip(tmp_vault):
     records = [{"name": None}, {"name": "Good"}]
-    results = tmp_vault.enrichment.add_type(
+    results = tmp_vault.expand.add_type(
         "Tags", records, filename_col="name", on_missing_filename="skip"
     )
     assert results[0].status == "skipped"
@@ -155,7 +155,7 @@ def test_add_type_missing_filename_skip(tmp_vault):
 
 def test_add_type_collision_within_batch_suffix(tmp_vault):
     records = [{"name": "Dup", "x": "1"}, {"name": "Dup", "x": "2"}]
-    results = tmp_vault.enrichment.add_type(
+    results = tmp_vault.expand.add_type(
         "Tags", records, filename_col="name", on_collision="suffix"
     )
     filenames = {r.filename for r in results}
@@ -166,7 +166,7 @@ def test_add_type_collision_within_batch_suffix(tmp_vault):
 def test_add_type_collision_within_batch_error(tmp_vault):
     records = [{"name": "Dup"}, {"name": "Dup"}]
     with pytest.raises(ValueError, match="collision"):
-        tmp_vault.enrichment.add_type("Tags", records, filename_col="name")
+        tmp_vault.expand.add_type("Tags", records, filename_col="name")
 
 
 # ── on_invalid ─────────────────────────────────────────────────────────────────
@@ -174,13 +174,13 @@ def test_add_type_collision_within_batch_error(tmp_vault):
 def test_add_type_on_invalid_error_writes_nothing(tmp_vault, tmp_path):
     records = [{"name": "Good"}, {"name": None}]
     with pytest.raises(ValueError):
-        tmp_vault.enrichment.add_type("Tags", records, filename_col="name")
+        tmp_vault.expand.add_type("Tags", records, filename_col="name")
     assert not (tmp_path / "data" / "Tags" / "Good.md").exists()
 
 
 def test_add_type_on_invalid_skip(tmp_vault, tmp_path):
     records = [{"name": "Good", "x": "1"}, {"name": None}]
-    results = tmp_vault.enrichment.add_type(
+    results = tmp_vault.expand.add_type(
         "Tags", records, filename_col="name", on_invalid="skip"
     )
     assert results[0].status == "processed"
@@ -193,7 +193,7 @@ def test_add_type_on_invalid_skip(tmp_vault, tmp_path):
 def test_stale_vault_raises(tmp_vault, tmp_path):
     (tmp_path / "data" / "Items" / "External.md").write_text("---\ntitle: X\n---\n")
     with pytest.raises(RuntimeError, match="stale"):
-        tmp_vault.enrichment.add_type(
+        tmp_vault.expand.add_type(
             "Tags", [{"name": "A"}], filename_col="name"
         )
 
@@ -203,6 +203,6 @@ def test_stale_vault_raises(tmp_vault, tmp_path):
 def test_add_type_pandas_dataframe(tmp_vault, tmp_path):
     pd = pytest.importorskip("pandas")
     df = pd.DataFrame([{"name": "A", "color": "red"}, {"name": "B", "color": "blue"}])
-    tmp_vault.enrichment.add_type("Tags", df, filename_col="name")
+    tmp_vault.expand.add_type("Tags", df, filename_col="name")
     assert (tmp_path / "data" / "Tags" / "A.md").exists()
     assert (tmp_path / "data" / "Tags" / "B.md").exists()

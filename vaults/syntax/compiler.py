@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import logging
 import re
 from typing import Any, Callable
 
@@ -10,6 +11,9 @@ from lark import Token, Tree
 
 from .context import EvalContext
 from .grammar import _parser
+
+logger = logging.getLogger(__name__)
+
 from .runtime import (
     _FileProxy,
     _NoteProxy,
@@ -56,6 +60,7 @@ class BasesCompiler:
             try:
                 return fn(ctx, {})
             except Exception:
+                logger.debug("Formula evaluation failed for %r", expression, exc_info=True)
                 return None
         return evaluate
 

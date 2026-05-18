@@ -98,7 +98,7 @@ class TypeSchema:
     property_display: dict[str, str] = field(default_factory=dict, repr=False)
 
 
-def _serialize_filter(filters) -> Optional[str]:
+def serialize_filter(filters: Any) -> Optional[str]:
     if not filters:
         return None
     if isinstance(filters, str):
@@ -191,7 +191,7 @@ class Schema:
                 )
             raw_filter = data.get("filters")
             if raw_filter:
-                type_schema.base_filter = _serialize_filter(raw_filter)
+                type_schema.base_filter = serialize_filter(raw_filter)
                 type_schema.compiled_filter = compiler.translate_filter(type_schema.base_filter)
 
         return schema

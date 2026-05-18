@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from .adapters import _normalize_null, _to_column, _to_records
-from .writers import (
+from .io import (
     _check_stale,
     _patch_frontmatter_property,
     _read_md_file,
@@ -190,7 +190,35 @@ def _process_batch(
     return failures, results, to_write, seen_props
 
 
-class Enrichment:
+def _handle_failures(
+    failures: list[tuple[int, str | None, str]],
+    results: list[EntryResult | None],
+    on_invalid: str,
+    type_name: str,
+    method: str,
+) -> None:
+    if not failures:
+        return
+    if on_invalid == "error":
+        lines = [
+            f"  [{idx}] {fname or '(no filename)'}: {reason}"
+            for idx, fname, reason in failures
+        ]
+        raise ValueError(
+            f"{method}[{type_name!r}]: {len(failures)} record(s) failed validation. "
+            f"Pass on_invalid='skip' to skip failed records.\n" + "\n".join(lines)
+        )
+    for idx, fname, reason in failures:
+        r = results[idx]
+        r.status = "skipped"
+        r.warning_types.append("skipped_validation")
+        logger.warning(
+            "%s[%s]: record %d skipped — %s",
+            method, type_name, idx, reason,
+        )
+
+
+class Expander:
     def __init__(self, vault: "Vault") -> None:
         self._vault = vault
 
@@ -232,24 +260,7 @@ class Enrichment:
             on_missing_filename=on_missing_filename,
         )
 
-        if failures:
-            if on_invalid == "error":
-                lines = [
-                    f"  [{idx}] {fname or '(no filename)'}: {reason}"
-                    for idx, fname, reason in failures
-                ]
-                raise ValueError(
-                    f"add_records[{type_name!r}]: {len(failures)} record(s) failed validation. "
-                    f"Pass on_invalid='skip' to skip failed records.\n" + "\n".join(lines)
-                )
-            for idx, fname, reason in failures:
-                r = results[idx]
-                r.status = "skipped"
-                r.warning_types.append("skipped_validation")
-                logger.warning(
-                    "add_records[%s]: record %d skipped — %s",
-                    type_name, idx, reason,
-                )
+        _handle_failures(failures, results, on_invalid, type_name, "add_records")
 
         written: list[tuple[str, dict]] = []
         for _, filename, fields, body in to_write:
@@ -388,24 +399,7 @@ class Enrichment:
             on_missing_filename=on_missing_filename,
         )
 
-        if failures:
-            if on_invalid == "error":
-                lines = [
-                    f"  [{idx}] {fname or '(no filename)'}: {reason}"
-                    for idx, fname, reason in failures
-                ]
-                raise ValueError(
-                    f"add_type[{type_name!r}]: {len(failures)} record(s) failed validation. "
-                    f"Pass on_invalid='skip' to skip failed records.\n" + "\n".join(lines)
-                )
-            for idx, fname, reason in failures:
-                r = results[idx]
-                r.status = "skipped"
-                r.warning_types.append("skipped_validation")
-                logger.warning(
-                    "add_type[%s]: record %d skipped — %s",
-                    type_name, idx, reason,
-                )
+        _handle_failures(failures, results, on_invalid, type_name, "add_type")
 
         _write_base_file(
             bases_root / f"{type_name}.base",

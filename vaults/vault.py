@@ -5,7 +5,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date as _date, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import frontmatter
 
@@ -13,13 +13,13 @@ from .syntax import EvalContext
 from .schema import FieldSchema, FieldType, Schema, infer_field_type, infer_link_target
 from .record import Record
 from .links import apply_dangling_refs, resolve_pairs
-from .linter import Linter, LintViolation, _topo_sort_formulas
+from .linter import Linter, LintViolation, topo_sort_formulas
 
 if TYPE_CHECKING:
     from .accessors.db import DbAccessor
     from .accessors.dfs import DfsAccessor
     from .accessors.graph import GraphAccessor
-    from .enrichment import Enrichment
+    from .expander import Expander
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ def _compute_fingerprint(data_root: Path) -> str:
     return h.hexdigest()
 
 
-def _coerce_target(observed: set[type]) -> type | None:
+def coerce_target(observed: set[type]) -> type | None:
     """Return the least-lossy common Python type for a set of observed types.
 
     Rules:
@@ -59,7 +59,7 @@ def _coerce_target(observed: set[type]) -> type | None:
     return str
 
 
-def _coerce_value(val, target: type):
+def coerce_value(val: Any, target: type) -> Any:
     """Convert val to target type; return val unchanged if coercion fails.
 
     No isinstance short-circuit: bool is a subtype of int in Python, so
@@ -79,6 +79,88 @@ def _coerce_value(val, target: type):
     return val
 
 
+def _serialize_formula_result(v: Any) -> Any:
+    from .syntax.runtime import _FileProxy
+    if isinstance(v, _FileProxy):
+        return f"[[{v._record.type_schema.name}/{v._record.name}]]"
+    if isinstance(v, list):
+        return [_serialize_formula_result(item) for item in v]
+    return v
+
+
+def _evaluate_formulas(
+    schema: Schema,
+    records: dict[str, list[Record]],
+    proto: "Vault",
+    path: Path,
+    bases_folder: str,
+    untranslatable_formulas: str,
+    frozen_now: datetime,
+) -> None:
+    for type_name, type_schema in schema.types.items():
+        formula_fields = [f for f in type_schema.fields if f.type == FieldType.FORMULA]
+        if not formula_fields:
+            continue
+        base_path = path / bases_folder / f"{type_name}.base"
+        recs = records.get(type_name, [])
+        ordered, cyclic = topo_sort_formulas(formula_fields)
+
+        for f in ordered:
+            if hasattr(f.compiled, "translation_error"):
+                if untranslatable_formulas == "error":
+                    raise ValueError(
+                        f"Untranslatable formula '{f.name}' on type '{type_name}': {f.compiled.translation_error}"
+                    )
+                for rec in recs:
+                    rec.fields[f.name] = None
+                continue
+
+            results = []
+            for rec in recs:
+                ctx = EvalContext(record=rec, vault=proto, base_path=base_path, now=frozen_now)
+                try:
+                    result = _serialize_formula_result(f.compiled(ctx))
+                except Exception:
+                    logger.debug("Formula '%s' failed on %s/%s", f.name, type_name, rec.name, exc_info=True)
+                    result = None
+                rec.fields[f.name] = result
+                results.append(result)
+            f.output_type = infer_field_type(results)
+            if f.output_type in (FieldType.LINK, FieldType.LIST_LINKS, FieldType.LIST_MIXED):
+                f.link_target = infer_link_target(results)
+
+        for f in cyclic:
+            for rec in recs:
+                rec.fields[f.name] = None
+
+
+def _apply_base_filters(
+    schema: Schema,
+    records: dict[str, list[Record]],
+    proto: "Vault",
+    path: Path,
+    bases_folder: str,
+    frozen_now: datetime,
+) -> None:
+    for type_name, type_schema in schema.types.items():
+        if not type_schema.compiled_filter:
+            continue
+        base_path = path / bases_folder / f"{type_name}.base"
+        before = records.get(type_name, [])
+        after = []
+        for rec in before:
+            ctx = EvalContext(record=rec, vault=proto, base_path=base_path, now=frozen_now)
+            try:
+                keep = type_schema.compiled_filter(ctx)
+            except Exception:
+                logger.debug("Base filter failed on %s/%s", type_name, rec.name, exc_info=True)
+                keep = True
+            if keep:
+                after.append(rec)
+            else:
+                logger.debug("Base filter dropped record: %s/%s", type_name, rec.name)
+        records[type_name] = after
+
 
 @dataclass
 class Vault:
@@ -86,30 +168,42 @@ class Vault:
     records: dict[str, list[Record]] = field(default_factory=dict)
     path: Optional[Path] = None
     relationship_pairs: list[tuple[str, str]] = field(default_factory=list)
-    violations: list = field(default_factory=list, repr=False)
+    violations: list[LintViolation] = field(default_factory=list, repr=False)
     fingerprint: str = field(default="", repr=False)
-    _load_kwargs: dict = field(default_factory=dict, repr=False)
-    _backlinks_index: Optional[dict] = field(default=None, repr=False, compare=False, init=False)
+    _load_kwargs: dict[str, Any] = field(default_factory=dict, repr=False)
+    _backlinks_index: Optional[dict[str, list[str]]] = field(default=None, repr=False, compare=False, init=False)
+    _db_cache: Optional["DbAccessor"] = field(default=None, repr=False, compare=False, init=False)
+    _dfs_cache: Optional["DfsAccessor"] = field(default=None, repr=False, compare=False, init=False)
+    _graph_cache: Optional["GraphAccessor"] = field(default=None, repr=False, compare=False, init=False)
+    _expander_cache: Optional["Expander"] = field(default=None, repr=False, compare=False, init=False)
 
     @property
     def db(self) -> "DbAccessor":
-        from .accessors.db import DbAccessor
-        return DbAccessor(self)
+        if self._db_cache is None:
+            from .accessors.db import DbAccessor
+            self._db_cache = DbAccessor(self)
+        return self._db_cache
 
     @property
     def dfs(self) -> "DfsAccessor":
-        from .accessors.dfs import DfsAccessor
-        return DfsAccessor(self)
+        if self._dfs_cache is None:
+            from .accessors.dfs import DfsAccessor
+            self._dfs_cache = DfsAccessor(self)
+        return self._dfs_cache
 
     @property
     def graph(self) -> "GraphAccessor":
-        from .accessors.graph import GraphAccessor
-        return GraphAccessor(self)
+        if self._graph_cache is None:
+            from .accessors.graph import GraphAccessor
+            self._graph_cache = GraphAccessor(self)
+        return self._graph_cache
 
     @property
-    def enrichment(self) -> "Enrichment":
-        from .enrichment import Enrichment
-        return Enrichment(self)
+    def expand(self) -> "Expander":
+        if self._expander_cache is None:
+            from .expander import Expander
+            self._expander_cache = Expander(self)
+        return self._expander_cache
 
     def _resolve_pairs(self, expand_to_lists: bool = True) -> None:
         resolve_pairs(self, expand_to_lists=expand_to_lists)
@@ -127,6 +221,11 @@ class Vault:
         self.records = new.records
         self.violations = new.violations
         self.fingerprint = new.fingerprint
+        self._backlinks_index = None
+        self._db_cache = None
+        self._dfs_cache = None
+        self._graph_cache = None
+        self._expander_cache = None
         return self
 
     def lint(self, *, homogeneity_threshold: float = 0.0) -> list[LintViolation]:
@@ -212,67 +311,10 @@ class Vault:
         # real Vault object is constructed.
         _proto = cls(schema=schema, records=records, path=path)
 
-        for type_name, type_schema in schema.types.items():
-            formula_fields = [f for f in type_schema.fields if f.type == FieldType.FORMULA]
-            if not formula_fields:
-                continue
-            base_path = path / bases_folder / f"{type_name}.base"
-            recs = records.get(type_name, [])
-            ordered, cyclic = _topo_sort_formulas(formula_fields)
-
-            for f in ordered:
-                if hasattr(f.compiled, "translation_error"):
-                    if untranslatable_formulas == "error":
-                        raise ValueError(
-                            f"Untranslatable formula '{f.name}' on type '{type_name}': {f.compiled.translation_error}"
-                        )
-                    for rec in recs:
-                        rec.fields[f.name] = None
-                    continue
-                from .syntax.runtime import _FileProxy as _FP
-
-                def _serialize(v: Any) -> Any:
-                    if isinstance(v, _FP):
-                        return f"[[{v._record.type_schema.name}/{v._record.name}]]"
-                    if isinstance(v, list):
-                        return [_serialize(item) for item in v]
-                    return v
-
-                results = []
-                for rec in recs:
-                    ctx = EvalContext(record=rec, vault=_proto, base_path=base_path, now=frozen_now)
-                    try:
-                        result = _serialize(f.compiled(ctx))
-                    except Exception:
-                        result = None
-                    rec.fields[f.name] = result
-                    results.append(result)
-                f.output_type = infer_field_type(results)
-                if f.output_type in (FieldType.LINK, FieldType.LIST_LINKS, FieldType.LIST_MIXED):
-                    f.link_target = infer_link_target(results)
-
-            for f in cyclic:
-                for rec in recs:
-                    rec.fields[f.name] = None
+        _evaluate_formulas(schema, records, _proto, path, bases_folder, untranslatable_formulas, frozen_now)
 
         if apply_base_filters:
-            for type_name, type_schema in schema.types.items():
-                if not type_schema.compiled_filter:
-                    continue
-                base_path = path / bases_folder / f"{type_name}.base"
-                before = records.get(type_name, [])
-                after = []
-                for rec in before:
-                    ctx = EvalContext(record=rec, vault=_proto, base_path=base_path, now=frozen_now)
-                    try:
-                        keep = type_schema.compiled_filter(ctx)
-                    except Exception:
-                        keep = True
-                    if keep:
-                        after.append(rec)
-                    else:
-                        logger.debug("Base filter dropped record: %s/%s", type_name, rec.name)
-                records[type_name] = after
+            _apply_base_filters(schema, records, _proto, path, bases_folder, frozen_now)
 
         vault = cls(
             schema=schema,

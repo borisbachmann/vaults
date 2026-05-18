@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from .context import EvalContext
 
 from ..record import Record
+from ..links import WIKILINK_RE, parse_wikilink_name
 
 if TYPE_CHECKING:
     from ..vault import Vault
@@ -395,22 +396,10 @@ def _to_number(val: Any) -> int | float | None:
 
 # ── Link resolution ──────────────────────────────────────────────
 
-_WIKILINK_RESOLVE_RE = re.compile(r"^\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]$")
-
-
-def _link_name(value: str) -> str | None:
-    """Return the record name (last path segment) from a wikilink string, or None."""
-    m = _WIKILINK_RESOLVE_RE.match(str(value).strip())
-    if not m:
-        return None
-    parts = m.group(1).split("/")
-    return parts[-1]
-
-
 def _resolve_link(link_str: Any, ctx: EvalContext) -> _FileProxy | None:
     if not link_str or not ctx.vault:
         return None
-    m = _WIKILINK_RESOLVE_RE.match(str(link_str).strip())
+    m = WIKILINK_RE.match(str(link_str).strip())
     if not m:
         return None
     target = m.group(1)
@@ -431,11 +420,11 @@ def _link_contains(obj: Any, search: Any) -> bool:
     """Membership check that compares wikilinks by target name, not raw string."""
     if not isinstance(obj, (str, list)):
         return False
-    search_name = _link_name(str(search)) if isinstance(search, str) else None
+    search_name = parse_wikilink_name(str(search)) if isinstance(search, str) else None
     if search_name is not None:
         if isinstance(obj, list):
-            return any(isinstance(item, str) and _link_name(item) == search_name for item in obj)
-        item_name = _link_name(obj)
+            return any(isinstance(item, str) and parse_wikilink_name(item) == search_name for item in obj)
+        item_name = parse_wikilink_name(obj)
         return item_name == search_name if item_name is not None else str(search) in obj
     return search in obj
 

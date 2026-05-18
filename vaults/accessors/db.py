@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from ..schema import FieldType
-from ..links import parse_wikilink
+from ..links import LINK_TYPES_PAIRED, iter_link_names
 
 if TYPE_CHECKING:
     import duckdb
@@ -46,7 +46,7 @@ class DbAccessor:
         for type_name, type_schema in vault.schema.types.items():
             recs = vault.records.get(type_name, [])
 
-            scalar_fields = [f for f in type_schema.fields if f.effective_type not in (FieldType.LINK, FieldType.LIST_LINKS)]
+            scalar_fields = [f for f in type_schema.fields if f.effective_type not in LINK_TYPES_PAIRED]
 
             col_defs = ["record VARCHAR PRIMARY KEY"]
             for f in scalar_fields:
@@ -63,31 +63,17 @@ class DbAccessor:
                 for rec in recs:
                     row: list[Any] = [rec.name]
                     for f in scalar_fields:
-                        row.append(_coerce_for_db(rec.fields.get(f.name), f.type))
+                        row.append(_coerce_for_db(rec.fields.get(f.name), f.effective_type))
                     rows.append(row)
                 con.executemany(insert_sql, rows)
 
             for f in type_schema.fields:
-                if f.effective_type not in (FieldType.LINK, FieldType.LIST_LINKS):
+                if f.effective_type not in LINK_TYPES_PAIRED:
                     continue
                 table_name = f"{type_name}__{f.name}"
                 rows = []
                 for rec in recs:
-                    value = rec.fields.get(f.name)
-                    if value is None:
-                        continue
-                    targets: list[str] = []
-                    if isinstance(value, str):
-                        parsed = parse_wikilink(value)
-                        if parsed:
-                            targets.append(parsed[1])
-                    elif isinstance(value, list):
-                        for item in value:
-                            if isinstance(item, str):
-                                parsed = parse_wikilink(item)
-                                if parsed:
-                                    targets.append(parsed[1])
-                    for target in targets:
+                    for target in iter_link_names(rec.fields.get(f.name)):
                         rows.append((rec.name, target))
                 con.execute(
                     f'CREATE TABLE "{table_name}" '

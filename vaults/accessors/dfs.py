@@ -9,9 +9,9 @@ import pyarrow as pa
 import yaml
 
 from ..syntax import BasesCompiler, EvalContext
-from ..schema import FieldSchema, FieldType, _serialize_filter
-from ..links import parse_wikilink_name
-from ..vault import _coerce_target, _coerce_value
+from ..schema import FieldSchema, FieldType, serialize_filter
+from ..links import LIST_LINK_TYPES, parse_wikilink_name
+from ..vault import coerce_target, coerce_value
 
 if TYPE_CHECKING:
     from ..vault import Vault
@@ -36,8 +36,6 @@ _FIELD_TO_ARROW: dict[FieldType, pa.DataType] = {
     FieldType.UNKNOWN:      pa.string(),
     FieldType.FORMULA:      pa.string(),  # fallback; overridden via output_type
 }
-
-_LIST_LINK_TYPES = (FieldType.LIST_LINKS, FieldType.LIST_MIXED)
 
 # Mapping from coercion target Python type to the Arrow type used when
 # coerce_types=True overrides the schema-inferred Arrow type.
@@ -75,7 +73,7 @@ def _convert_value(value: Any, field_type: FieldType) -> Any:
     if field_type == FieldType.LINK:
         name = parse_wikilink_name(str(value))
         return name if name is not None else str(value)
-    if field_type in _LIST_LINK_TYPES:
+    if field_type in LIST_LINK_TYPES:
         if not isinstance(value, list):
             return [str(value)]
         result = []
@@ -124,7 +122,7 @@ def _filter_records(vault: "Vault", type_name: str, view_config: dict) -> list:
     raw = view_config.get("filters")
     if not raw:
         return vault.records.get(type_name, [])
-    expr = _serialize_filter(raw)
+    expr = serialize_filter(raw)
     if not expr:
         return vault.records.get(type_name, [])
     fn = _compiler.translate_filter(expr)
@@ -140,6 +138,7 @@ def _filter_records(vault: "Vault", type_name: str, view_config: dict) -> list:
             if fn(ctx):
                 result.append(rec)
         except Exception:
+            logger.debug("View filter failed on %s/%s", type_name, rec.name, exc_info=True)
             result.append(rec)
     return result
 
@@ -189,13 +188,13 @@ def _build_arrow_table(
         # coerce_types: for scalar non-link fields, unify mixed Python types to
         # the least-lossy common type before building the Arrow array.
         coerce_to = None
-        if coerce_types and f.type != FieldType.LINK and f.type not in _LIST_LINK_TYPES:
+        if coerce_types and f.type != FieldType.LINK and f.type not in LIST_LINK_TYPES:
             non_null = [v for v in raw if v is not None]
             if non_null and not any(isinstance(v, list) for v in non_null):
-                coerce_to = _coerce_target({type(v) for v in non_null})
+                coerce_to = coerce_target({type(v) for v in non_null})
 
         if coerce_to is not None:
-            values = [_coerce_value(v, coerce_to) if v is not None else None for v in raw]
+            values = [coerce_value(v, coerce_to) if v is not None else None for v in raw]
             at = _COERCE_ARROW.get(coerce_to, pa.string())
         else:
             values = [_convert_value(v, eff_type) for v in raw]
@@ -373,7 +372,7 @@ class TableAccessor:
 
     def __repr__(self) -> str:
         recs = len(self._vault.records.get(self._type_name, []))
-        views_n = len(ViewsAccessor(self._vault, self._type_name))
+        views_n = len(self.views)
         view_part = f", {views_n} view{'s' if views_n != 1 else ''}" if views_n else ""
         if self._view_config:
             return f"TableAccessor({self._type_name!r}, view={self._view_config.get('name')!r}, {recs} records)"

@@ -9,71 +9,71 @@ from pathlib import Path
 import pytest
 
 from vaults import Vault
-from vaults.vault import _coerce_target, _coerce_value
+from vaults.vault import coerce_target, coerce_value
 
 
 # ---------------------------------------------------------------------------
 # Unit tests for the private helpers (in vault.py)
 # ---------------------------------------------------------------------------
 
-def test_coerce_target_single_type():
-    assert _coerce_target({int}) is None
+def testcoerce_target_single_type():
+    assert coerce_target({int}) is None
 
 
-def test_coerce_target_int_float():
-    assert _coerce_target({int, float}) is float
+def testcoerce_target_int_float():
+    assert coerce_target({int, float}) is float
 
 
-def test_coerce_target_bool_int():
-    assert _coerce_target({bool, int}) is int
+def testcoerce_target_bool_int():
+    assert coerce_target({bool, int}) is int
 
 
-def test_coerce_target_bool_float():
-    assert _coerce_target({bool, float}) is float
+def testcoerce_target_bool_float():
+    assert coerce_target({bool, float}) is float
 
 
-def test_coerce_target_str_wins_over_numeric():
-    assert _coerce_target({int, str}) is str
-    assert _coerce_target({float, str}) is str
+def testcoerce_target_str_wins_over_numeric():
+    assert coerce_target({int, str}) is str
+    assert coerce_target({float, str}) is str
 
 
-def test_coerce_target_date_plus_str():
-    assert _coerce_target({datetime.date, str}) is str
+def testcoerce_target_date_plus_str():
+    assert coerce_target({datetime.date, str}) is str
 
 
-def test_coerce_target_date_plus_int():
-    assert _coerce_target({datetime.date, int}) is str
+def testcoerce_target_date_plus_int():
+    assert coerce_target({datetime.date, int}) is str
 
 
-def test_coerce_target_date_alone():
-    assert _coerce_target({datetime.date}) is None
+def testcoerce_target_date_alone():
+    assert coerce_target({datetime.date}) is None
 
 
-def test_coerce_value_date_to_str():
+def testcoerce_value_date_to_str():
     d = datetime.date(2026, 5, 18)
-    assert _coerce_value(d, str) == "2026-05-18"
+    assert coerce_value(d, str) == "2026-05-18"
 
 
-def test_coerce_value_int_to_float():
-    assert _coerce_value(3, float) == 3.0
-    assert isinstance(_coerce_value(3, float), float)
+def testcoerce_value_int_to_float():
+    assert coerce_value(3, float) == 3.0
+    assert isinstance(coerce_value(3, float), float)
 
 
-def test_coerce_value_bool_to_int():
-    assert _coerce_value(True, int) == 1
-    assert type(_coerce_value(True, int)) is int
+def testcoerce_value_bool_to_int():
+    assert coerce_value(True, int) == 1
+    assert type(coerce_value(True, int)) is int
 
 
-def test_coerce_value_none_passthrough():
-    assert _coerce_value(None, str) is None
+def testcoerce_value_none_passthrough():
+    assert coerce_value(None, str) is None
 
 
-def test_coerce_value_already_target_type():
-    assert _coerce_value("hello", str) == "hello"
+def testcoerce_value_already_target_type():
+    assert coerce_value("hello", str) == "hello"
 
 
-def test_coerce_value_bad_conversion_returns_original():
-    assert _coerce_value("hello", float) == "hello"
+def testcoerce_value_bad_conversion_returns_original():
+    assert coerce_value("hello", float) == "hello"
 
 
 # ---------------------------------------------------------------------------

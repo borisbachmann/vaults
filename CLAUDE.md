@@ -9,7 +9,7 @@ A Python package that acts as an interface for data analytics on **human-curated
 - **Parsing:** Parses `.md` and Obsidian `.bases` content to python objects of interlinked `Records` in `Vault` container.
 - **Linting:** When parsing automatically detects inconsistencies in relational data, providing the user with information to ensure type safety etc. in original data.
 - **Access:** Convert `Vault` contents to DataFrames (pandas and polars), Knowledge Graph (Kuzu and triplets in Turtle format) as well as in memory Database with SQL capabilities (DuckDB)
-- **Enrichment:** Limited Capabilities to write to the original files with clear scope: (1) Writing analytic results back to new properties, inserting between but not touching original MD content, (2) Writing new records to the base, not touching existing files, (3) creating new types (folder & connected `.base` file) => Enrichment is tightly scoped to ensure original data integrity as much as possible. Use these tools on backed-up files, though.
+- **Expander:** Limited capabilities to expand the vault by writing to files: (1) Writing analytic results back to new properties, inserting between but not touching original MD content, (2) Writing new records to existing types, not touching existing files, (3) Creating new types (folder & connected `.base` file). Tightly scoped to ensure original data integrity. Use on backed-up files.
 - **Janitor:** Capabilities to correct inconsistencies in relational data and interlinkages, as a bonus to Obsidian's `Linter` plugin which focusess on individual notes.
 
 The goal of the project is to build that package and ensure clean architecture and code. Far goal is eventual deployment as a pip-installabale package.
@@ -27,13 +27,16 @@ The goal of the project is to build that package and ensure clean architecture a
 
 ## Package structure
 
-- `vault.py` – `Vault` class as main interface to hold `Records` and provides interface to access, enrichment and janitor capabilites.
+- `vault.py` – `Vault` class as main interface to hold `Records` and provides interface to access, expander and janitor capabilities.
+- `expander` - Write layer for expanding the vault: add records, columns, or entire types. `operations.py` holds the `Expander` class, `io.py` handles file I/O, `adapters.py` normalizes inputs.
 - `record.py` – Basic `Record` class
 - `schema.py`– `Schema` class that describes data structure and related classes and helpers
 - `linter.py` – Functionality to test and report data integrity
 - `links.py`- Handling of Wikilinks in MD files as well as backlinks and link-driven lookups
 - `syntax`- Parsing of Obsidian `.bases` syntax for filtering, grouping, sorting and formula fields. `compiler.py` holds a self-contained `BaseCompiler` class that is reusable outside this package. `grammar.py` contains a Lark grammar constructed with the help of Claude Opus.
 - `accessors` - Provides access via pandas and polars DataFrame output, DuckDB connection or KGs (Kuzu for Cypher and export to Turtle files for SPARQL)
+
+See `docs/code-map.md` for detailed per-module breakdown: classes, functions, data flow, cross-module dependencies, dataclass fields, and test coverage.
 
 ## Development process
 

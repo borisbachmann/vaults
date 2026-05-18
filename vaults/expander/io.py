@@ -142,7 +142,7 @@ def _write_base_file(path: Path, type_name: str, props: list[str], data_folder: 
 
     views = CommentedSeq([view])
 
-    and_clause = CommentedSeq([f'file.inFolder("data/{type_name}")'])
+    and_clause = CommentedSeq([f'file.inFolder("{data_folder}/{type_name}")'])
     filters_and = CommentedMap()
     filters_and["and"] = and_clause
 

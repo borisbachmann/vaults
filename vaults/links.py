@@ -16,40 +16,40 @@ logger = logging.getLogger(__name__)
 WIKILINK_RE = re.compile(r"^\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]$")
 
 LINK_TYPES = (FieldType.LINK, FieldType.LIST_LINKS, FieldType.LIST_MIXED)
+LIST_LINK_TYPES = (FieldType.LIST_LINKS, FieldType.LIST_MIXED)
 LINK_TYPES_PAIRED = (FieldType.LINK, FieldType.LIST_LINKS)
 
 
 # ── Wikilink parsing ──────────────────────────────────────────────────────────
 
 
-def parse_wikilink(value: str) -> Optional[tuple[str, str]]:
-    """Return (folder, name) from a wikilink, or None."""
+def _match_wikilink(value: str) -> Optional[list[str]]:
+    """Match a wikilink and return its path segments, or None."""
     m = WIKILINK_RE.match(str(value).strip())
     if not m:
         return None
-    parts = m.group(1).split("/")
-    return (parts[-2], parts[-1]) if len(parts) >= 2 else None
+    return m.group(1).split("/")
+
+
+def parse_wikilink(value: str) -> Optional[tuple[str, str]]:
+    """Return (folder, name) from a wikilink, or None."""
+    parts = _match_wikilink(value)
+    return (parts[-2], parts[-1]) if parts and len(parts) >= 2 else None
 
 
 def is_wikilink(value: str) -> bool:
-    return bool(WIKILINK_RE.match(str(value).strip()))
+    return _match_wikilink(value) is not None
 
 
 def wikilink_target_folder(value: str) -> Optional[str]:
-    m = WIKILINK_RE.match(str(value).strip())
-    if not m:
-        return None
-    parts = m.group(1).split("/")
-    return parts[-2] if len(parts) >= 2 else None
+    parts = _match_wikilink(value)
+    return parts[-2] if parts and len(parts) >= 2 else None
 
 
 def parse_wikilink_name(value: str) -> Optional[str]:
     """Return the record name (last path segment) from a wikilink, or None."""
-    m = WIKILINK_RE.match(str(value).strip())
-    if not m:
-        return None
-    parts = m.group(1).split("/")
-    return parts[-1]
+    parts = _match_wikilink(value)
+    return parts[-1] if parts else None
 
 
 def iter_link_names(value: Any) -> list[str]:

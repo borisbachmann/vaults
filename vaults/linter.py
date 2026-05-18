@@ -28,7 +28,7 @@ import unicodedata
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from .syntax import BasesCompiler
 from .schema import FieldSchema, FieldType
@@ -62,12 +62,12 @@ RULES: dict[str, str] = {
 
 @dataclass
 class LintViolation:
-    severity: str  # "error" | "warning" | "suggestion"
+    severity: Literal["error", "warning", "suggestion"]
     message: str
     rule: Optional[str] = None
     type_name: Optional[str] = None
     field_name: Optional[str] = None
-    details: Optional[dict] = None
+    details: Optional[dict[str, Any]] = None
 
     def __str__(self) -> str:
         header = f"[{self.rule}] {RULES.get(self.rule, '')}" if self.rule else ""
@@ -78,7 +78,7 @@ class LintViolation:
         return self.__str__()
 
 
-def _topo_sort_formulas(
+def topo_sort_formulas(
     formula_fields: list[FieldSchema],
 ) -> tuple[list[FieldSchema], list[FieldSchema]]:
     """Kahn's algorithm topological sort. Returns (ordered, cyclic)."""
@@ -214,153 +214,174 @@ class Linter:
 
         for type_name, type_schema in self.vault.schema.types.items():
             recs = self.vault.records.get(type_name, [])
-            total = len(recs)
+            violations.extend(self._check_homogeneity(type_name, type_schema, recs))
+            violations.extend(self._check_type_drift(type_name, type_schema, recs))
+            violations.extend(self._check_link_integrity(type_name, type_schema, recs))
+            violations.extend(self._check_formula_output_types(type_name, type_schema, recs))
 
-            # R-1: field homogeneity
-            if total > 0:
-                non_formula_fields = [f for f in type_schema.fields if f.type != FieldType.FORMULA]
-                for f in non_formula_fields:
-                    has = [r.name for r in recs if f.name in r.fields]
-                    missing = [r.name for r in recs if f.name not in r.fields]
-                    proportion = len(has) / total
-                    minority = min(proportion, 1 - proportion)
-                    if minority > self.homogeneity_threshold:
-                        pct = round(proportion * 100, 1)
-                        details = {"present": sorted(has), "missing": sorted(missing)}
-                        violations.append(LintViolation(
-                            severity="warning",
-                            message=f"Field '{f.name}' present in {pct}% of records ({len(has)}/{total})",
-                            rule="R-1",
-                            type_name=type_name,
-                            field_name=f.name,
-                            details=details,
-                        ))
+        violations.extend(self._check_pairs())
+        return violations
 
-            # R-2: type drift — value Python type varies across records for scalar fields
-            scalar_fields = [
-                f for f in type_schema.fields
-                if f.type not in LINK_TYPES and f.type != FieldType.FORMULA
-            ]
-            for f in scalar_fields:
-                by_type: dict[str, list[str]] = {}
-                for rec in recs:
-                    val = rec.fields.get(f.name)
-                    if val is not None:
-                        # YAML coerces ISO date strings to datetime.date while
-                        # non-standard strings like "2026-05-MM" stay as str.
-                        # Treat both as the same category to avoid spurious drift.
-                        type_key = "str" if isinstance(val, datetime.date) else type(val).__name__
-                        by_type.setdefault(type_key, []).append(rec.name)
-                if len(by_type) > 1:
-                    violations.append(LintViolation(
-                        severity="warning",
-                        message=(
-                            f"Field '{f.name}' has inconsistent value types across records: "
-                            f"{sorted(by_type)}"
-                        ),
-                        rule="R-2",
-                        type_name=type_name,
-                        field_name=f.name,
-                        details=by_type,
-                    ))
+    def _check_homogeneity(
+        self, type_name: str, type_schema, recs: list,
+    ) -> list[LintViolation]:
+        """R-1: field not present across all records of a type."""
+        violations: list[LintViolation] = []
+        total = len(recs)
+        if total == 0:
+            return violations
+        non_formula_fields = [f for f in type_schema.fields if f.type != FieldType.FORMULA]
+        for f in non_formula_fields:
+            has = [r.name for r in recs if f.name in r.fields]
+            missing = [r.name for r in recs if f.name not in r.fields]
+            proportion = len(has) / total
+            minority = min(proportion, 1 - proportion)
+            if minority > self.homogeneity_threshold:
+                pct = round(proportion * 100, 1)
+                details = {"present": sorted(has), "missing": sorted(missing)}
+                violations.append(LintViolation(
+                    severity="warning",
+                    message=f"Field '{f.name}' present in {pct}% of records ({len(has)}/{total})",
+                    rule="R-1",
+                    type_name=type_name,
+                    field_name=f.name,
+                    details=details,
+                ))
+        return violations
 
-            # R-3 / R-4 / R-6: collect link violations per field
-            known_types = set(self.vault.schema.types.keys())
-            data_root = (
-                self.vault.path / self.vault.schema.data_folder
-                if self.vault.path else None
-            )
-            folder_violations: dict[str, dict[str, list[str]]] = {}
-            orphaned_violations: dict[str, dict[str, list[str]]] = {}
+    def _check_type_drift(
+        self, type_name: str, type_schema, recs: list,
+    ) -> list[LintViolation]:
+        """R-2: field value type inconsistent across records."""
+        violations: list[LintViolation] = []
+        scalar_fields = [
+            f for f in type_schema.fields
+            if f.type not in LINK_TYPES and f.type != FieldType.FORMULA
+        ]
+        for f in scalar_fields:
+            by_type: dict[str, list[str]] = {}
+            for rec in recs:
+                val = rec.fields.get(f.name)
+                if val is not None:
+                    type_key = "str" if isinstance(val, datetime.date) else type(val).__name__
+                    by_type.setdefault(type_key, []).append(rec.name)
+            if len(by_type) > 1:
+                violations.append(LintViolation(
+                    severity="warning",
+                    message=(
+                        f"Field '{f.name}' has inconsistent value types across records: "
+                        f"{sorted(by_type)}"
+                    ),
+                    rule="R-2",
+                    type_name=type_name,
+                    field_name=f.name,
+                    details=by_type,
+                ))
+        return violations
 
-            for f in type_schema.fields:
-                if f.type not in LINK_TYPES:
+    def _check_link_integrity(
+        self, type_name: str, type_schema, recs: list,
+    ) -> list[LintViolation]:
+        """R-3: multiple target folders. R-4: unknown target type. R-6: missing target file."""
+        violations: list[LintViolation] = []
+        known_types = set(self.vault.schema.types.keys())
+        data_root = (
+            self.vault.path / self.vault.schema.data_folder
+            if self.vault.path else None
+        )
+        folder_violations: dict[str, dict[str, list[str]]] = {}
+        orphaned_violations: dict[str, dict[str, list[str]]] = {}
+
+        for f in type_schema.fields:
+            if f.type not in LINK_TYPES:
+                continue
+
+            by_folder: dict[str, list[str]] = {}
+            for rec in recs:
+                value = rec.fields.get(f.name)
+                if value is None:
                     continue
-
-                # Collect links by target folder: {folder: [record_names]}
-                by_folder: dict[str, list[str]] = {}
-                for rec in recs:
-                    value = rec.fields.get(f.name)
-                    if value is None:
+                items = value if isinstance(value, list) else [value]
+                for item in items:
+                    if not isinstance(item, str):
                         continue
-                    items = value if isinstance(value, list) else [value]
-                    for item in items:
-                        if not isinstance(item, str):
-                            continue
-                        parsed = parse_wikilink(item)
-                        if parsed is None:
-                            continue
-                        folder, target_name = parsed
-                        by_folder.setdefault(folder, []).append(rec.name)
-                        if folder not in known_types:
-                            # R-4: link targets a folder outside known types
-                            folder_violations.setdefault(rec.name, {}).setdefault(f.name, []).append(item)
-                        elif data_root is not None:
-                            # R-6: known type, but the target file is missing on disk
-                            if not (data_root / folder / f"{target_name}.md").exists():
-                                orphaned_violations.setdefault(rec.name, {}).setdefault(f.name, []).append(item)
+                    parsed = parse_wikilink(item)
+                    if parsed is None:
+                        continue
+                    folder, target_name = parsed
+                    by_folder.setdefault(folder, []).append(rec.name)
+                    if folder not in known_types:
+                        folder_violations.setdefault(rec.name, {}).setdefault(f.name, []).append(item)
+                    elif data_root is not None:
+                        if not (data_root / folder / f"{target_name}.md").exists():
+                            orphaned_violations.setdefault(rec.name, {}).setdefault(f.name, []).append(item)
 
-                # R-3: field has links pointing to more than one folder
-                if len(by_folder) > 1:
+            if len(by_folder) > 1:
+                violations.append(LintViolation(
+                    severity="warning",
+                    message=f"Field '{f.name}' has links to multiple folders: {sorted(by_folder.keys())}",
+                    rule="R-3",
+                    type_name=type_name,
+                    field_name=f.name,
+                    details=by_folder,
+                ))
+
+        if folder_violations:
+            violations.append(LintViolation(
+                severity="warning",
+                message="Links target folders outside known types",
+                rule="R-4",
+                type_name=type_name,
+                details={type_name: folder_violations},
+            ))
+
+        if orphaned_violations:
+            violations.append(LintViolation(
+                severity="warning",
+                message="Links target files that do not exist on disk",
+                rule="R-6",
+                type_name=type_name,
+                details={type_name: orphaned_violations},
+            ))
+
+        return violations
+
+    def _check_formula_output_types(
+        self, type_name: str, type_schema, recs: list,
+    ) -> list[LintViolation]:
+        """F-4: formula output type inconsistent across records."""
+        violations: list[LintViolation] = []
+        formula_fields = [f for f in type_schema.fields if f.type == FieldType.FORMULA]
+        for f in formula_fields:
+            if f.output_type == FieldType.UNKNOWN:
+                non_null = [r.fields.get(f.name) for r in recs if r.fields.get(f.name) is not None]
+                if non_null:
                     violations.append(LintViolation(
                         severity="warning",
-                        message=f"Field '{f.name}' has links to multiple folders: {sorted(by_folder.keys())}",
-                        rule="R-3",
+                        message="Formula output type is inconsistent across records",
+                        rule="F-4",
                         type_name=type_name,
                         field_name=f.name,
-                        details=by_folder,
                     ))
+        return violations
 
-            if folder_violations:
-                violations.append(LintViolation(
-                    severity="warning",
-                    message="Links target folders outside known types",
-                    rule="R-4",
-                    type_name=type_name,
-                    details={type_name: folder_violations},
-                ))
-
-            if orphaned_violations:
-                violations.append(LintViolation(
-                    severity="warning",
-                    message="Links target files that do not exist on disk",
-                    rule="R-6",
-                    type_name=type_name,
-                    details={type_name: orphaned_violations},
-                ))
-
-            # F-4: formula output type inconsistent
-            formula_fields = [f for f in type_schema.fields if f.type == FieldType.FORMULA]
-            for f in formula_fields:
-                if f.output_type == FieldType.UNKNOWN:
-                    non_null = [r.fields.get(f.name) for r in recs if r.fields.get(f.name) is not None]
-                    if non_null:
-                        violations.append(LintViolation(
-                            severity="warning",
-                            message="Formula output type is inconsistent across records",
-                            rule="F-4",
-                            type_name=type_name,
-                            field_name=f.name,
-                        ))
-
-        # R-5: incomplete pairs — backlinks missing in source files
+    def _check_pairs(self) -> list[LintViolation]:
+        """R-5: paired link field has missing backlinks in source files."""
+        violations: list[LintViolation] = []
         for first, second in self.vault.relationship_pairs:
             type_a, field_a = first.split(".", 1)
             type_b, field_b = second.split(".", 1)
 
-            # Edges from side A: a → b
             edges_a: set[tuple[str, str]] = set()
             for rec in self.vault.records.get(type_a, []):
                 for name in iter_link_names(rec.fields.get(field_a)):
                     edges_a.add((rec.name, name))
 
-            # Edges from side B: a ← b (inverted to match A's direction)
             edges_b: set[tuple[str, str]] = set()
             for rec in self.vault.records.get(type_b, []):
                 for name in iter_link_names(rec.fields.get(field_b)):
                     edges_b.add((name, rec.name))
 
-            # Missing on side A: edges only asserted by B
             missing_a: dict[str, list[str]] = {}
             for a_name, b_name in sorted(edges_b - edges_a):
                 missing_a.setdefault(a_name, []).append(b_name)
@@ -375,7 +396,6 @@ class Linter:
                     details=missing_a,
                 ))
 
-            # Missing on side B: edges only asserted by A
             missing_b: dict[str, list[str]] = {}
             for a_name, b_name in sorted(edges_a - edges_b):
                 missing_b.setdefault(b_name, []).append(a_name)
@@ -423,7 +443,7 @@ class Linter:
                         ))
 
             if formula_fields:
-                _, cyclic = _topo_sort_formulas(formula_fields)
+                _, cyclic = topo_sort_formulas(formula_fields)
                 for f in cyclic:
                     violations.append(LintViolation(
                         severity="error",
