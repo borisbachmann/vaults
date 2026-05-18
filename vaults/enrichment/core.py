@@ -5,9 +5,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from ._adapters import _normalize_null, _to_column, _to_records
-from ._writers import (
+from .adapters import _normalize_null, _to_column, _to_records
+from .writers import (
     _check_stale,
+    _patch_frontmatter_property,
     _read_md_file,
     _resolve_suffix,
     _write_base_file,
@@ -261,6 +262,95 @@ class Enrichment:
         self._vault.reload()
         return [r for r in results if r is not None]
 
+    def add_column(
+        self,
+        type_name: str,
+        column,
+        *,
+        property_name: str,
+        on_existing: Literal["error", "skip", "overwrite"] = "error",
+        on_missing: Literal["error", "skip"] = "error",
+    ) -> list[EntryResult]:
+        _check_stale(self._vault)
+
+        if type_name not in self._vault.schema.types:
+            raise ValueError(
+                f"Type {type_name!r} not found in schema. "
+                f"Known types: {sorted(self._vault.schema.types)}"
+            )
+
+        col_dict = _to_column(column)
+        records = self._vault.records.get(type_name, [])
+        data_root = self._vault.path / self._vault.schema.data_folder
+        type_dir = data_root / type_name
+
+        missing = [r.name for r in records if r.name not in col_dict]
+        existing = [
+            r.name for r in records
+            if r.name in col_dict and property_name in r.fields
+        ]
+
+        if missing and on_missing == "error":
+            raise ValueError(
+                f"add_column[{type_name!r}]: {len(missing)} record(s) not covered by column mapping. "
+                f"Pass on_missing='skip' to leave them unchanged.\n"
+                f"Unmatched filenames: {', '.join(missing)}"
+            )
+        if existing and on_existing == "error":
+            raise ValueError(
+                f"add_column[{type_name!r}]: property {property_name!r} already exists on "
+                f"{len(existing)} record(s). Pass on_existing='skip' or 'overwrite'.\n"
+                f"Affected filenames: {', '.join(existing)}"
+            )
+
+        results: list[EntryResult] = []
+
+        for rec in records:
+            result = EntryResult(filename=rec.name, status="processed")
+
+            if rec.name not in col_dict:
+                result.status = "skipped"
+                result.warning_types.append("skipped_missing")
+                logger.warning(
+                    "add_column[%s]: %r skipped — not in column mapping",
+                    type_name, rec.name,
+                )
+                results.append(result)
+                continue
+
+            value = _normalize_null(col_dict[rec.name])
+
+            if property_name in rec.fields:
+                if on_existing == "skip":
+                    result.status = "skipped"
+                    result.warning_types.append("skipped_existing")
+                    logger.warning(
+                        "add_column[%s]: %r skipped — property %r already exists",
+                        type_name, rec.name, property_name,
+                    )
+                    results.append(result)
+                    continue
+                else:  # overwrite (error case raised above)
+                    result.warning_types.append("overwrite")
+                    logger.warning(
+                        "add_column[%s]: %r overwriting %r",
+                        type_name, rec.name, property_name,
+                    )
+
+            md_path = type_dir / f"{rec.name}.md"
+            _patch_frontmatter_property(
+                md_path, property_name, value,
+                overwrite=(property_name in rec.fields),
+            )
+
+            if result.warning_types:
+                result.status = "warning"
+
+            results.append(result)
+
+        self._vault.reload()
+        return results
+
     def add_type(
         self,
         type_name: str,
@@ -331,92 +421,3 @@ class Enrichment:
 
         self._vault.reload()
         return [r for r in results if r is not None]
-
-    def add_column(
-        self,
-        type_name: str,
-        column,
-        *,
-        property_name: str,
-        on_existing: Literal["error", "skip", "overwrite"] = "error",
-        on_missing: Literal["error", "skip"] = "error",
-    ) -> list[EntryResult]:
-        _check_stale(self._vault)
-
-        if type_name not in self._vault.schema.types:
-            raise ValueError(
-                f"Type {type_name!r} not found in schema. "
-                f"Known types: {sorted(self._vault.schema.types)}"
-            )
-
-        col_dict = _to_column(column)
-        records = self._vault.records.get(type_name, [])
-        data_root = self._vault.path / self._vault.schema.data_folder
-        type_dir = data_root / type_name
-
-        # Pre-validate: collect all failures before writing anything
-        missing = [r.name for r in records if r.name not in col_dict]
-        existing = [
-            r.name for r in records
-            if r.name in col_dict and property_name in r.fields
-        ]
-
-        if missing and on_missing == "error":
-            raise ValueError(
-                f"add_column[{type_name!r}]: {len(missing)} record(s) not covered by column mapping. "
-                f"Pass on_missing='skip' to leave them unchanged.\n"
-                f"Unmatched filenames: {', '.join(missing)}"
-            )
-        if existing and on_existing == "error":
-            raise ValueError(
-                f"add_column[{type_name!r}]: property {property_name!r} already exists on "
-                f"{len(existing)} record(s). Pass on_existing='skip' or 'overwrite'.\n"
-                f"Affected filenames: {', '.join(existing)}"
-            )
-
-        results: list[EntryResult] = []
-
-        for rec in records:
-            result = EntryResult(filename=rec.name, status="processed")
-
-            if rec.name not in col_dict:
-                result.status = "skipped"
-                result.warning_types.append("skipped_missing")
-                logger.warning(
-                    "add_column[%s]: %r skipped — not in column mapping",
-                    type_name, rec.name,
-                )
-                results.append(result)
-                continue
-
-            value = _normalize_null(col_dict[rec.name])
-
-            if property_name in rec.fields:
-                if on_existing == "skip":
-                    result.status = "skipped"
-                    result.warning_types.append("skipped_existing")
-                    logger.warning(
-                        "add_column[%s]: %r skipped — property %r already exists",
-                        type_name, rec.name, property_name,
-                    )
-                    results.append(result)
-                    continue
-                else:  # overwrite (error case raised above)
-                    result.warning_types.append("overwrite")
-                    logger.warning(
-                        "add_column[%s]: %r overwriting %r",
-                        type_name, rec.name, property_name,
-                    )
-
-            md_path = type_dir / f"{rec.name}.md"
-            fields, body = _read_md_file(md_path)
-            fields[property_name] = value
-            _write_md_file(md_path, fields, body)
-
-            if result.warning_types:
-                result.status = "warning"
-
-            results.append(result)
-
-        self._vault.reload()
-        return results

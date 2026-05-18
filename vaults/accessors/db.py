@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from ..schema import FieldType
-from ..links import parse_wikilink, LINK_TYPES_PAIRED
+from ..links import parse_wikilink
 
 if TYPE_CHECKING:
     import duckdb
@@ -46,7 +46,7 @@ class DbAccessor:
         for type_name, type_schema in vault.schema.types.items():
             recs = vault.records.get(type_name, [])
 
-            scalar_fields = [f for f in type_schema.fields if f.type not in LINK_TYPES_PAIRED]
+            scalar_fields = [f for f in type_schema.fields if f.effective_type not in (FieldType.LINK, FieldType.LIST_LINKS)]
 
             col_defs = ["record VARCHAR PRIMARY KEY"]
             for f in scalar_fields:
@@ -68,7 +68,7 @@ class DbAccessor:
                 con.executemany(insert_sql, rows)
 
             for f in type_schema.fields:
-                if f.type not in LINK_TYPES_PAIRED:
+                if f.effective_type not in (FieldType.LINK, FieldType.LIST_LINKS):
                     continue
                 table_name = f"{type_name}__{f.name}"
                 rows = []

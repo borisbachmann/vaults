@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Optional
 import frontmatter
 
 from .syntax import EvalContext
-from .schema import FieldSchema, FieldType, Schema, infer_field_type
+from .schema import FieldSchema, FieldType, Schema, infer_field_type, infer_link_target
 from .record import Record
 from .links import apply_dangling_refs, resolve_pairs
 from .linter import Linter, LintViolation, _topo_sort_formulas
@@ -203,6 +203,8 @@ class Vault:
                     rec.fields[f.name] = result
                     results.append(result)
                 f.output_type = infer_field_type(results)
+                if f.output_type in (FieldType.LINK, FieldType.LIST_LINKS, FieldType.LIST_MIXED):
+                    f.link_target = infer_link_target(results)
 
             for f in cyclic:
                 for rec in recs:
