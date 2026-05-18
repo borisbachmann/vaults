@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date as _date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -33,6 +33,51 @@ def _compute_fingerprint(data_root: Path) -> str:
         h.update(str(p.relative_to(data_root)).encode())
         h.update(p.read_bytes())
     return h.hexdigest()
+
+
+def _coerce_target(observed: set[type]) -> type | None:
+    """Return the least-lossy common Python type for a set of observed types.
+
+    Rules:
+      {int, float}        → float
+      {bool, int}         → int   (bool ⊂ int in Python)
+      {bool, float}       → float
+      anything with str   → str
+      date + anything     → str   (via isoformat)
+      single type         → None  (no coercion needed)
+    """
+    if len(observed) <= 1:
+        return None
+    if str in observed:
+        return str
+    if any(issubclass(t, _date) for t in observed):
+        return str  # date mixed with non-date → str
+    if float in observed:
+        return float
+    if int in observed:
+        return int
+    return str
+
+
+def _coerce_value(val, target: type):
+    """Convert val to target type; return val unchanged if coercion fails.
+
+    No isinstance short-circuit: bool is a subtype of int in Python, so
+    isinstance(True, int) would prevent coercing bool → int without it.
+    """
+    if val is None:
+        return val
+    try:
+        if target is str:
+            return val.isoformat() if isinstance(val, _date) else str(val)
+        if target is float:
+            return float(val)
+        if target is int:
+            return int(val)
+    except (ValueError, TypeError):
+        pass
+    return val
+
 
 
 @dataclass

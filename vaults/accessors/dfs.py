@@ -11,6 +11,7 @@ import yaml
 from ..syntax import BasesCompiler, EvalContext
 from ..schema import FieldSchema, FieldType, _serialize_filter
 from ..links import parse_wikilink_name
+from ..vault import _coerce_target, _coerce_value
 
 if TYPE_CHECKING:
     from ..vault import Vault
@@ -37,6 +38,14 @@ _FIELD_TO_ARROW: dict[FieldType, pa.DataType] = {
 }
 
 _LIST_LINK_TYPES = (FieldType.LIST_LINKS, FieldType.LIST_MIXED)
+
+# Mapping from coercion target Python type to the Arrow type used when
+# coerce_types=True overrides the schema-inferred Arrow type.
+_COERCE_ARROW: dict[type, pa.DataType] = {
+    str:   pa.string(),
+    float: pa.float64(),
+    int:   pa.int64(),
+}
 
 # ── Column ordering slots ───────────────────────────────────────────────────
 
@@ -139,6 +148,7 @@ def _build_arrow_table(
     vault: "Vault",
     type_name: str,
     view_config: Optional[dict] = None,
+    coerce_types: bool = False,
 ) -> pa.Table:
     type_schema = vault.schema.types[type_name]
     prop_display = type_schema.property_display or None
@@ -174,8 +184,23 @@ def _build_arrow_table(
             arrays[col] = pa.array([None] * len(recs), type=pa.string())
             continue
         eff_type = f.effective_type
-        values = [_convert_value(r.fields.get(col), eff_type) for r in recs]
-        at = _arrow_type(f)
+        raw = [r.fields.get(col) for r in recs]
+
+        # coerce_types: for scalar non-link fields, unify mixed Python types to
+        # the least-lossy common type before building the Arrow array.
+        coerce_to = None
+        if coerce_types and f.type != FieldType.LINK and f.type not in _LIST_LINK_TYPES:
+            non_null = [v for v in raw if v is not None]
+            if non_null and not any(isinstance(v, list) for v in non_null):
+                coerce_to = _coerce_target({type(v) for v in non_null})
+
+        if coerce_to is not None:
+            values = [_coerce_value(v, coerce_to) if v is not None else None for v in raw]
+            at = _COERCE_ARROW.get(coerce_to, pa.string())
+        else:
+            values = [_convert_value(v, eff_type) for v in raw]
+            at = _arrow_type(f)
+
         try:
             arrays[col] = pa.array(values, type=at)
         except (pa.ArrowInvalid, pa.ArrowTypeError):
@@ -291,56 +316,53 @@ class TableAccessor:
         self._group_col: Optional[str] = None
         self._views_cache: Optional[ViewsAccessor] = None
 
-    def to_arrow(self) -> pa.Table:
-        if self._arrow_cache is not None:
+    def to_arrow(self, *, coerce_types: bool = False) -> pa.Table:
+        if not coerce_types and self._arrow_cache is not None:
             return self._arrow_cache
-        self._arrow_cache, self._group_col = _build_arrow_table(
-            self._vault, self._type_name, self._view_config
+        tbl, self._group_col = _build_arrow_table(
+            self._vault, self._type_name, self._view_config, coerce_types=coerce_types
         )
-        return self._arrow_cache
+        if not coerce_types:
+            self._arrow_cache = tbl
+        return tbl
 
-    def to_pandas(self):
+    def to_pandas(self, *, coerce_types: bool = False):
         try:
             import pandas as pd
         except ImportError as e:
             raise ImportError(
                 "to_pandas() requires pandas. Install with: pip install vaults[pandas]"
             ) from e
-        tbl = self.to_arrow()
+        tbl = self.to_arrow(coerce_types=coerce_types)
+        group_col = self._group_col
         df = tbl.to_pandas(
             types_mapper=lambda t: pd.Int64Dtype() if t == pa.int64() else None
         )
-        if self._group_col and self._group_col in df.columns:
-            if pa.types.is_list(tbl.schema.field(self._group_col).type):
-                # List columns can't be a MultiIndex level (not hashable); sort only.
-                # Document: groupBy on list fields → group column first, sorted by it, no MultiIndex.
-                other = [c for c in df.columns if c != self._group_col]
-                df = df[[self._group_col] + other].sort_values(
-                    self._group_col, na_position="last", kind="stable"
+        if group_col and group_col in df.columns:
+            if pa.types.is_list(tbl.schema.field(group_col).type):
+                other = [c for c in df.columns if c != group_col]
+                df = df[[group_col] + other].sort_values(
+                    group_col, na_position="last", kind="stable"
                 )
             else:
-                # Scalar groupBy → MultiIndex (group_col, _record), matching Obsidian's grouping UX.
-                # group_col becomes the first index level, which is effectively first in the frame.
-                df = df.set_index([self._group_col, "_record"])
+                df = df.set_index([group_col, "_record"])
         return df
 
-    def to_polars(self):
+    def to_polars(self, *, coerce_types: bool = False):
         try:
             import polars as pl
         except ImportError as e:
             raise ImportError(
                 "to_polars() requires polars. Install with: pip install vaults[polars]"
             ) from e
-        tbl = self.to_arrow()
+        tbl = self.to_arrow(coerce_types=coerce_types)
+        group_col = self._group_col
         df = pl.from_arrow(tbl)
-        if self._group_col and self._group_col in df.columns:
-            # Move group column to first position (Polars has no MultiIndex).
-            other = [c for c in df.columns if c != self._group_col]
-            df = df.select([self._group_col] + other)
-            if pa.types.is_list(tbl.schema.field(self._group_col).type):
-                # List columns can't be a true group key in Polars either; sort only.
-                # Document: groupBy on list fields → group column first, sorted by it, no explicit grouping.
-                df = df.sort(self._group_col, nulls_last=True)
+        if group_col and group_col in df.columns:
+            other = [c for c in df.columns if c != group_col]
+            df = df.select([group_col] + other)
+            if pa.types.is_list(tbl.schema.field(group_col).type):
+                df = df.sort(group_col, nulls_last=True)
         return df
 
     @property

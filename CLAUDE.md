@@ -49,3 +49,8 @@ Never commit files that may contain personal information or local environment de
 - API credentials or tokens of any kind
 
 When in doubt, add the file to `.gitignore` rather than committing it.
+
+## Data contract
+
+The Vault operates on markdown files organized along type-exclusive directories within a common folder in the filesystem's vault root (`/data/` by default). Corresponding Obsidian `.base` files have the same name as the typed folders and also sit in a common folder  (`/bases/` by default). See `docs/contract/contract.md` for details.
+

@@ -1,5 +1,28 @@
+"""Relational and cross-record linting for Obsidian vaults.
+
+Division of labor with the Obsidian community Linter plugin
+------------------------------------------------------------
+The Obsidian Linter plugin handles *file-level* YAML and Markdown hygiene and
+should be run alongside this module. Specifically, defer to it for:
+
+- YAML formatting: quoting style, array style, trailing whitespace.
+- Within-file key ordering and blank lines around frontmatter.
+- Generic tag and alias formatting.
+
+This module covers *relational and cross-record* concerns the plugin cannot see:
+
+- R-1: fields missing from some records of a type (homogeneity).
+- R-2: field values with inconsistent Python types across records (type drift).
+- R-3: a link field pointing to more than one target folder.
+- R-4: links targeting a folder that is not a known type.
+- R-5: backlink missing from one side of a declared relationship pair.
+- R-6: a link pointing to a known-type file that does not exist on disk.
+- S-*: structural issues (missing .base files, subdirectories in type folders, etc.).
+- F-*: formula translation and dependency issues.
+"""
 from __future__ import annotations
 
+import datetime
 import re
 import unicodedata
 from collections import defaultdict, deque
@@ -25,13 +48,15 @@ RULES: dict[str, str] = {
     "S-4": "Non-record file or subdirectory inside a type folder",
     "S-5": "Cross-platform incompatible file or folder name",
     "R-1": "Field not present across all records of a type",
+    "R-2": "Field value type inconsistent across records of a type",
     "R-3": "Links in one field point to multiple target folders",
     "R-4": "Link targets a folder outside known types",
+    "R-5": "Paired link field has missing backlinks in source files",
+    "R-6": "Link target file does not exist on disk",
     "F-1": "Formula not translatable — possibly malformed in source",
     "F-2": "Formula references an unknown field",
     "F-3": "Circular dependency between formula fields",
     "F-4": "Formula output type inconsistent across records",
-    "R-5": "Paired link field has missing backlinks in source files",
 }
 
 
@@ -211,10 +236,42 @@ class Linter:
                             details=details,
                         ))
 
-            # R-3 / R-4: collect link violations per field
+            # R-2: type drift — value Python type varies across records for scalar fields
+            scalar_fields = [
+                f for f in type_schema.fields
+                if f.type not in LINK_TYPES and f.type != FieldType.FORMULA
+            ]
+            for f in scalar_fields:
+                by_type: dict[str, list[str]] = {}
+                for rec in recs:
+                    val = rec.fields.get(f.name)
+                    if val is not None:
+                        # YAML coerces ISO date strings to datetime.date while
+                        # non-standard strings like "2026-05-MM" stay as str.
+                        # Treat both as the same category to avoid spurious drift.
+                        type_key = "str" if isinstance(val, datetime.date) else type(val).__name__
+                        by_type.setdefault(type_key, []).append(rec.name)
+                if len(by_type) > 1:
+                    violations.append(LintViolation(
+                        severity="warning",
+                        message=(
+                            f"Field '{f.name}' has inconsistent value types across records: "
+                            f"{sorted(by_type)}"
+                        ),
+                        rule="R-2",
+                        type_name=type_name,
+                        field_name=f.name,
+                        details=by_type,
+                    ))
+
+            # R-3 / R-4 / R-6: collect link violations per field
             known_types = set(self.vault.schema.types.keys())
-            # R-4 detail: {type: {record: {field: [links]}}}
+            data_root = (
+                self.vault.path / self.vault.schema.data_folder
+                if self.vault.path else None
+            )
             folder_violations: dict[str, dict[str, list[str]]] = {}
+            orphaned_violations: dict[str, dict[str, list[str]]] = {}
 
             for f in type_schema.fields:
                 if f.type not in LINK_TYPES:
@@ -230,13 +287,18 @@ class Linter:
                     for item in items:
                         if not isinstance(item, str):
                             continue
-                        folder = wikilink_target_folder(item)
-                        if folder is None:
+                        parsed = parse_wikilink(item)
+                        if parsed is None:
                             continue
+                        folder, target_name = parsed
                         by_folder.setdefault(folder, []).append(rec.name)
-                        # R-4: link targets a folder outside known types
                         if folder not in known_types:
+                            # R-4: link targets a folder outside known types
                             folder_violations.setdefault(rec.name, {}).setdefault(f.name, []).append(item)
+                        elif data_root is not None:
+                            # R-6: known type, but the target file is missing on disk
+                            if not (data_root / folder / f"{target_name}.md").exists():
+                                orphaned_violations.setdefault(rec.name, {}).setdefault(f.name, []).append(item)
 
                 # R-3: field has links pointing to more than one folder
                 if len(by_folder) > 1:
@@ -256,6 +318,15 @@ class Linter:
                     rule="R-4",
                     type_name=type_name,
                     details={type_name: folder_violations},
+                ))
+
+            if orphaned_violations:
+                violations.append(LintViolation(
+                    severity="warning",
+                    message="Links target files that do not exist on disk",
+                    rule="R-6",
+                    type_name=type_name,
+                    details={type_name: orphaned_violations},
                 ))
 
             # F-4: formula output type inconsistent
