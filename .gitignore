@@ -1,10 +1,10 @@
 .venv/
-data/baserow_jwt.txt
-data/baserow_token.txt
-data/baserow_id.txt
-data/nsp_vault/
+data/
 archive/
 __pycache__/
 *.pyc
+*.ipynb
+.ipynb_checkpoints/
 .DS_Store
 .claude/settings.local.json
+open-here.app/

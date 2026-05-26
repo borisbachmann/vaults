@@ -1,10 +1,12 @@
 [build-system]
 requires = ["setuptools>=68"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "vaults"
 version = "0.1.0"
+description = "Data analytics on human-curated structured and relational data in Markdown format, built around Obsidian."
+license = "MIT"
 requires-python = ">=3.11"
 dependencies = [
     "python-frontmatter",
@@ -14,14 +16,16 @@ dependencies = [
     "pyarrow",
     "networkx",
     "rdflib",
+    "pandas",
 ]
 
 [project.optional-dependencies]
-dev    = ["pytest", "duckdb", "pandas", "numpy", "kuzu"]
-pandas = ["pandas"]
 polars = ["polars"]
-dfs    = ["pandas", "polars"]
+db     = ["duckdb"]
 graph  = ["kuzu"]
+dfs    = ["polars"]
+all    = ["polars", "duckdb", "kuzu"]
+dev    = ["pytest", "polars", "duckdb", "kuzu"]
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -17,13 +17,10 @@ The goal of the project is to build that package and ensure clean architecture a
 ## Directory layout
 
 - `vaults/` — the Python package source (`Schema` and `Vault` classes)
-- `data`– real-world data used for developing and testing, gitignored
-- `data/nsp_vault/` — a static copy of the test vault used as a pytest fixture (gitignored); not the live vault
-- `docs/` — design documentation and instructions
-- `archive/` — legacy scripts and config
-- `tests/`- tests
-
-**open-here.app:** Do not touch. User-provided app to open terminal from finder
+- `data/` — real-world data used for developing and testing (gitignored)
+- `docs/` — public documentation (data contract, code map)
+- `archive/` — legacy scripts, config, and build instructions (gitignored)
+- `tests/` — tests
 
 ## Package structure
 

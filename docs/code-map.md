@@ -21,10 +21,10 @@ Structural reference for the `vaults` package. Update when the code changes.
 | `vaults/accessors/dfs.py` | 405 | `DfsAccessor`, `TableAccessor`, `ViewsAccessor` — Arrow/pandas/polars output |
 | `vaults/accessors/db.py` | 86 | `DbAccessor` — DuckDB export |
 | `vaults/accessors/graph.py` | 391 | `GraphAccessor` — NetworkX, Kuzu, RDF/Turtle export |
-| `vaults/enrichment/__init__.py` | 3 | Re-exports `Enrichment`, `EntryResult` |
-| `vaults/enrichment/core.py` | 417 | `Enrichment` class — `add_records()`, `add_column()`, `add_type()` |
-| `vaults/enrichment/writers.py` | 165 | File I/O — `_write_md_file`, `_patch_frontmatter_property`, `sanitize_filename` |
-| `vaults/enrichment/adapters.py` | 80 | Input normalization — `_to_records()`, `_to_column()`, `_normalize_null()` |
+| `vaults/expander/__init__.py` | 3 | Re-exports `Expander`, `EntryResult` |
+| `vaults/expander/operations.py` | 417 | `Expander` class — `add_records()`, `add_column()`, `add_type()` |
+| `vaults/expander/io.py` | 165 | File I/O — `_write_md_file`, `_patch_frontmatter_property`, `sanitize_filename` |
+| `vaults/expander/adapters.py` | 80 | Input normalization — `_to_records()`, `_to_column()`, `_normalize_null()` |
 
 ## Dataclass fields
 
@@ -85,9 +85,9 @@ Property: `type` -> `type_schema.name`.
 | `_db_cache` | `Optional[DbAccessor]` | Lazy cache, `init=False` |
 | `_dfs_cache` | `Optional[DfsAccessor]` | Lazy cache, `init=False` |
 | `_graph_cache` | `Optional[GraphAccessor]` | Lazy cache, `init=False` |
-| `_enrichment_cache` | `Optional[Enrichment]` | Lazy cache, `init=False` |
+| `_expander_cache` | `Optional[Expander]` | Lazy cache, `init=False` |
 
-Properties: `db`, `dfs`, `graph`, `enrichment` (cached lazy accessor creation), `is_stale`.
+Properties: `db`, `dfs`, `graph`, `expand` (cached lazy accessor creation), `is_stale`.
 Methods: `from_vault(path, ...)` classmethod, `reload()` (invalidates all caches), `lint()`, `_resolve_pairs()`, `_get_backlinks_index()`, `_build_backlinks_index()`.
 Module-level helpers: `coerce_target()`, `coerce_value()`, `_evaluate_formulas()`, `_apply_base_filters()`, `_serialize_formula_result()`.
 
@@ -109,7 +109,7 @@ Module-level helpers: `coerce_target()`, `coerce_value()`, `_evaluate_formulas()
 | `base_path` | `Path` | Path to the `.base` file |
 | `now` | `datetime.datetime` | Frozen timestamp for determinism |
 
-### `EntryResult` — `enrichment/core.py`
+### `EntryResult` — `expander/operations.py`
 | Field | Type | Notes |
 |-------|------|-------|
 | `filename` | `str` | |
@@ -164,22 +164,22 @@ vault.graph.to_kuzu()          -> Kuzu connection (node tables + rel tables)
 vault.graph.to_rdf()           -> rdflib.Graph (OWL classes, properties, individuals)
 ```
 
-### Enrichment data flow
+### Expander data flow
 
 ```
-vault.enrichment.add_records(type_name, data, filename_col=...)
+vault.expand.add_records(type_name, data, filename_col=...)
   |- _to_records(data)       -> list[dict]  (adapters.py)
   |- _process_batch(...)     -> failures, results, to_write
-  |- _write_md_file(...)     -> disk  (writers.py)
+  |- _write_md_file(...)     -> disk  (io.py)
   |- _update_reverse_links() -> patch paired files
   +- vault.reload()
 
-vault.enrichment.add_column(type_name, column, property_name=...)
+vault.expand.add_column(type_name, column, property_name=...)
   |- _to_column(column)      -> dict[str, Any]
   |- _patch_frontmatter_property(...)  -> surgical YAML insert/update
   +- vault.reload()
 
-vault.enrichment.add_type(type_name, data, filename_col=...)
+vault.expand.add_type(type_name, data, filename_col=...)
   |- _to_records() + _process_batch()
   |- _write_base_file(...)   -> creates .base file
   |- _write_md_file(...)     -> creates record files
@@ -234,15 +234,15 @@ accessors/graph.py
   <- schema.py (FieldSchema, FieldType)
   <- links.py  (iter_link_names, LINK_TYPES)
 
-enrichment/core.py
-  <- enrichment/adapters.py
-  <- enrichment/writers.py
+expander/operations.py
+  <- expander/adapters.py
+  <- expander/io.py
   <- links.py (parse_wikilink — inside _update_reverse_links)
 
-enrichment/writers.py
+expander/io.py
   (no internal deps besides vault.py TYPE_CHECKING)
 
-enrichment/adapters.py
+expander/adapters.py
   (no internal deps)
 ```
 
@@ -316,6 +316,6 @@ __all__ = [
 | `test_coerce_types.py` | 20 | `_coerce_target`, `_coerce_value`, cache isolation |
 | `test_graph_accessor.py` | 28 | NetworkX, Kuzu names, RDF export |
 | `test_vault_to_db.py` | 30 | DuckDB tables, join tables, formula integration |
-| `test_enrichment_add_records.py` | 32 | `add_records()`, collision, sanitization, reverse links |
-| `test_enrichment_add_column.py` | 30 | `add_column()`, on_existing/on_missing modes |
-| `test_enrichment_add_type.py` | 28 | `add_type()`, base file generation |
+| `test_expand_add_records.py` | 32 | `add_records()`, collision, sanitization, reverse links |
+| `test_expand_add_column.py` | 30 | `add_column()`, on_existing/on_missing modes |
+| `test_expand_add_type.py` | 28 | `add_type()`, base file generation |
