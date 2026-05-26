@@ -90,6 +90,34 @@ def _uri_safe(s: str) -> str:
     return _ascii_slug(s) or "_"
 
 
+_GRAPHML_PRIMITIVES = (bool, int, float, str)
+
+
+def _flatten_value(v: Any) -> Any:
+    """Coerce a value to a GraphML/GEXF-safe primitive.
+
+    GraphML supports only bool, int, float, and str. Lists are joined;
+    date/datetime and any other type is cast to str.
+    """
+    if isinstance(v, list):
+        return ", ".join(str(i) for i in v)
+    if isinstance(v, _GRAPHML_PRIMITIVES):
+        return v
+    return str(v)
+
+
+def _flatten_graph_attrs(G: "nx.DiGraph") -> "nx.DiGraph":
+    """Return a copy of G with all node/edge attrs coerced to GraphML-safe primitives."""
+    H = G.copy()
+    for _, data in H.nodes(data=True):
+        for k, v in list(data.items()):
+            data[k] = _flatten_value(v)
+    for _, _, data in H.edges(data=True):
+        for k, v in list(data.items()):
+            data[k] = _flatten_value(v)
+    return H
+
+
 def _build_digraph(vault: "Vault") -> "nx.DiGraph":
     import networkx as nx
 
@@ -384,6 +412,42 @@ class GraphAccessor:
             g.serialize(destination=str(path), format=format)
 
         return g
+
+    # ── GraphML / GEXF export ─────────────────────────────────────────────────
+
+    def to_graphml(self, path: str | Path, directed: bool = True) -> Path:
+        """Write the vault graph to a GraphML file and return the path.
+
+        GraphML is an XML-based format readable by Gephi, yEd, and other tools.
+        List-typed field values are joined to comma-separated strings because
+        GraphML does not support array attributes.
+
+        ``directed=False`` converts to an undirected graph before export.
+        """
+        import networkx as nx
+
+        G = self._digraph() if directed else self._digraph().to_undirected()
+        H = _flatten_graph_attrs(G)
+        path = Path(path)
+        nx.write_graphml(H, str(path))
+        return path
+
+    def to_gephi(self, path: str | Path, directed: bool = True) -> Path:
+        """Write the vault graph to a GEXF file (Gephi's native format) and return the path.
+
+        GEXF (Graph Exchange XML Format) is the native import format for Gephi.
+        List-typed field values are joined to comma-separated strings because
+        GEXF does not support array attributes.
+
+        ``directed=False`` converts to an undirected graph before export.
+        """
+        import networkx as nx
+
+        G = self._digraph() if directed else self._digraph().to_undirected()
+        H = _flatten_graph_attrs(G)
+        path = Path(path)
+        nx.write_gexf(H, str(path))
+        return path
 
     def __repr__(self) -> str:
         n_recs = sum(len(recs) for recs in self._vault.records.values())

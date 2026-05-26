@@ -8,9 +8,12 @@ Files on disk are the source of truth. `vaults` parses `.md` records and Obsidia
 
 - **Parsing** — Reads Markdown frontmatter and `.base` files into typed, interlinked `Record` objects inside a `Vault` container. Formulas defined in `.base` files are compiled and evaluated at load time.
 - **Linting** — Automatically detects inconsistencies in relational data (mixed link targets, dangling references, schema inhomogeneity) and reports them as navigable violations.
-- **DataFrames** — Export per-type tables as pandas or polars DataFrames, including Obsidian Bases views with column selection and ordering.
+- **DataFrames** — Export per-type tables as pandas or polars DataFrames, Apache Arrow tables, Parquet files, or CSV, including Obsidian Bases views with column selection and ordering.
 - **SQL** — Query the vault via DuckDB with auto-generated join tables for link fields.
-- **Knowledge Graphs** — Export as NetworkX graphs, Kuzu (Cypher), or RDF/Turtle (SPARQL).
+- **Knowledge Graphs** — Export as NetworkX graphs, Kuzu (Cypher), RDF/Turtle (SPARQL), GraphML, or GEXF (Gephi).
+
+The above don't touch files on disk and are safe to use on original data. Use the following with care:
+
 - **Expander** — Write layer for adding records, columns, or entire types back to disk while preserving existing file content.
 - **Janitor** *(planned)* — Corrections for relational inconsistencies and interlinkages, complementing Obsidian's Linter plugin.
 
@@ -45,12 +48,22 @@ for v in vault.violations:
 # DataFrames (pandas)
 df = vault.dfs["Personen"].to_pandas()
 
+# Arrow / Parquet / CSV
+tbl = vault.dfs["Personen"].to_arrow()          # pa.Table
+vault.dfs["Personen"].to_parquet("out.parquet") # single type
+vault.dfs.to_parquet("exports/")               # all types → exports/{Type}.parquet
+vault.dfs["Personen"].to_csv("out.csv")
+
 # SQL via DuckDB (requires duckdb)
 con = vault.db.to_duckdb()
 con.sql("SELECT * FROM Personen").show()
 
 # Knowledge graph (requires kuzu)
 db = vault.graph.to_kuzu()
+
+# Graph export (NetworkX required; no extra deps for file formats)
+vault.graph.to_graphml("vault.graphml")
+vault.graph.to_gephi("vault.gexf")
 
 # Add records to disk
 vault.expand.add_records("Personen", [{"name": "New Person"}])

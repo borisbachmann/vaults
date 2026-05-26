@@ -101,6 +101,26 @@ def _parse_order_entry(entry: str, property_display: dict[str, str] | None = Non
     return entry
 
 
+def _flatten_lists_for_csv(tbl: pa.Table) -> pa.Table:
+    """Return a copy of tbl with list-typed columns cast to comma-separated strings.
+
+    pyarrow.csv.write_csv does not support list types; this coercion is applied
+    only for CSV export and does not touch the cached Arrow table.
+    """
+    cols: dict[str, pa.Array] = {}
+    for name in tbl.schema.names:
+        col = tbl.column(name)
+        if pa.types.is_list(col.type):
+            py_vals = [
+                ", ".join(str(v) for v in val.as_py()) if val.is_valid else None
+                for val in col
+            ]
+            cols[name] = pa.array(py_vals, type=pa.string())
+        else:
+            cols[name] = col
+    return pa.table(cols)
+
+
 def _full_column_order(type_schema, field_map: dict[str, FieldSchema]) -> list[str]:
     """Build column order for full-table (no view) access."""
     non_record = [name for name in field_map if name != "full_text"]
@@ -364,6 +384,31 @@ class TableAccessor:
                 df = df.sort(group_col, nulls_last=True)
         return df
 
+    def to_parquet(self, path: str | Path, *, coerce_types: bool = False) -> Path:
+        """Write this table to a Parquet file and return the path.
+
+        Uses the same Arrow table produced by ``to_arrow()``, so all field
+        types are preserved exactly — including lists and dates.
+        """
+        import pyarrow.parquet as pq
+        tbl = self.to_arrow(coerce_types=coerce_types)
+        path = Path(path)
+        pq.write_table(tbl, str(path))
+        return path
+
+    def to_csv(self, path: str | Path, *, coerce_types: bool = False) -> Path:
+        """Write this table to a CSV file and return the path.
+
+        List-typed columns are flattened to comma-separated strings because
+        the CSV format does not support arrays.
+        """
+        import pyarrow.csv as pa_csv
+        tbl = self.to_arrow(coerce_types=coerce_types)
+        tbl = _flatten_lists_for_csv(tbl)
+        path = Path(path)
+        pa_csv.write_csv(tbl, str(path))
+        return path
+
     @property
     def views(self) -> ViewsAccessor:
         if self._views_cache is None:
@@ -399,6 +444,25 @@ class DfsAccessor:
 
     def __len__(self) -> int:
         return len(self._vault.schema.types)
+
+    def to_arrow(self, *, coerce_types: bool = False) -> dict[str, pa.Table]:
+        """Return all types as a ``{type_name: pa.Table}`` dict."""
+        return {t: self[t].to_arrow(coerce_types=coerce_types) for t in self._vault.schema.types}
+
+    def to_parquet(self, directory: str | Path, *, coerce_types: bool = False) -> dict[str, Path]:
+        """Write all types as ``{type_name}.parquet`` files into *directory* and return a path dict.
+
+        Creates the directory if it does not exist.
+        """
+        import pyarrow.parquet as pq
+        directory = Path(directory)
+        directory.mkdir(parents=True, exist_ok=True)
+        result: dict[str, Path] = {}
+        for type_name in self._vault.schema.types:
+            path = directory / f"{type_name}.parquet"
+            pq.write_table(self[type_name].to_arrow(coerce_types=coerce_types), str(path))
+            result[type_name] = path
+        return result
 
     def __repr__(self) -> str:
         types = list(self._vault.schema.types)

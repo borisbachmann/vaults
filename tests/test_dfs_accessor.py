@@ -218,3 +218,106 @@ def test_view_sort_applied(vault):
     tbl = vault.dfs["Projekte"].views["Projekte"].to_arrow()
     records = tbl.column("_record").to_pylist()
     assert records == ["Beta", "Alpha"]
+
+
+# ── to_parquet (TableAccessor) ─────────────────────────────────────────────
+
+def test_to_parquet_creates_file(vault, tmp_path):
+    out = tmp_path / "projekte.parquet"
+    result = vault.dfs["Projekte"].to_parquet(out)
+    assert result == out
+    assert out.exists()
+    assert out.stat().st_size > 0
+
+
+def test_to_parquet_roundtrip(vault, tmp_path):
+    import pyarrow.parquet as pq
+    out = tmp_path / "projekte.parquet"
+    tbl_orig = vault.dfs["Projekte"].to_arrow()
+    vault.dfs["Projekte"].to_parquet(out)
+    tbl_read = pq.read_table(str(out))
+    assert tbl_read.column_names == tbl_orig.column_names
+    assert tbl_read.num_rows == tbl_orig.num_rows
+
+
+def test_to_parquet_preserves_types(vault, tmp_path):
+    import pyarrow.parquet as pq
+    out = tmp_path / "projekte.parquet"
+    vault.dfs["Projekte"].to_parquet(out)
+    tbl = pq.read_table(str(out))
+    # Beginn is a date field — must survive as date32, not cast to string
+    import pyarrow as pa
+    assert pa.types.is_date(tbl.schema.field("Beginn").type)
+
+
+# ── to_csv (TableAccessor) ─────────────────────────────────────────────────
+
+def test_to_csv_creates_file(vault, tmp_path):
+    out = tmp_path / "projekte.csv"
+    result = vault.dfs["Projekte"].to_csv(out)
+    assert result == out
+    assert out.exists()
+    assert out.stat().st_size > 0
+
+
+def test_to_csv_readable(vault, tmp_path):
+    import pyarrow.csv as pa_csv
+    out = tmp_path / "projekte.csv"
+    vault.dfs["Projekte"].to_csv(out)
+    tbl = pa_csv.read_csv(str(out))
+    assert "_record" in tbl.column_names
+    assert tbl.num_rows == vault.dfs["Projekte"].to_arrow().num_rows
+
+
+def test_to_csv_list_column_flattened(vault, tmp_path):
+    # Personen has a list-typed link column — must not crash and must be a string in the CSV
+    import pyarrow as pa
+    import pyarrow.csv as pa_csv
+    out = tmp_path / "personen.csv"
+    vault.dfs["Personen"].to_csv(out)
+    tbl = pa_csv.read_csv(str(out))
+    for name in tbl.schema.names:
+        assert not pa.types.is_list(tbl.schema.field(name).type)
+
+
+# ── DfsAccessor.to_arrow ──────────────────────────────────────────────────
+
+def test_dfs_to_arrow_returns_dict(vault):
+    import pyarrow as pa
+    tables = vault.dfs.to_arrow()
+    assert isinstance(tables, dict)
+    assert set(tables.keys()) == set(vault.schema.types.keys())
+    for tbl in tables.values():
+        assert isinstance(tbl, pa.Table)
+
+
+def test_dfs_to_arrow_contains_records(vault):
+    tables = vault.dfs.to_arrow()
+    records = tables["Projekte"].column("_record").to_pylist()
+    assert set(records) == {"Alpha", "Beta"}
+
+
+# ── DfsAccessor.to_parquet ────────────────────────────────────────────────
+
+def test_dfs_to_parquet_creates_directory(vault, tmp_path):
+    out_dir = tmp_path / "parquet_export"
+    result = vault.dfs.to_parquet(out_dir)
+    assert out_dir.is_dir()
+    assert isinstance(result, dict)
+    assert set(result.keys()) == set(vault.schema.types.keys())
+
+
+def test_dfs_to_parquet_files_exist(vault, tmp_path):
+    out_dir = tmp_path / "parquet_export"
+    result = vault.dfs.to_parquet(out_dir)
+    for type_name, path in result.items():
+        assert path == out_dir / f"{type_name}.parquet"
+        assert path.exists()
+
+
+def test_dfs_to_parquet_readable(vault, tmp_path):
+    import pyarrow.parquet as pq
+    out_dir = tmp_path / "parquet_export"
+    vault.dfs.to_parquet(out_dir)
+    tbl = pq.read_table(str(out_dir / "Projekte.parquet"))
+    assert "_record" in tbl.column_names

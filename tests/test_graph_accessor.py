@@ -351,3 +351,65 @@ def test_rdf_to_rdf_with_path(vault, tmp_path):
     from rdflib import Graph
     assert isinstance(g, Graph)
     assert out.exists()
+
+
+# ── GraphML ───────────────────────────────────────────────────────────────────
+
+def test_to_graphml_creates_file(vault, tmp_path):
+    out = tmp_path / "vault.graphml"
+    result = vault.graph.to_graphml(out)
+    assert result == out
+    assert out.exists()
+    assert out.stat().st_size > 0
+
+
+def test_to_graphml_readable(vault, tmp_path):
+    import networkx as nx
+    out = tmp_path / "vault.graphml"
+    vault.graph.to_graphml(out)
+    H = nx.read_graphml(str(out))
+    assert "Alpha|Projekte" in H.nodes
+    assert "Anna|Personen" in H.nodes
+
+
+def test_to_graphml_edges_present(vault, tmp_path):
+    import networkx as nx
+    out = tmp_path / "vault.graphml"
+    vault.graph.to_graphml(out)
+    H = nx.read_graphml(str(out))
+    assert H.has_edge("Alpha|Projekte", "Anna|Personen")
+
+
+def test_to_graphml_directed_false(vault, tmp_path):
+    import networkx as nx
+    out = tmp_path / "vault_und.graphml"
+    vault.graph.to_graphml(out, directed=False)
+    H = nx.read_graphml(str(out))
+    assert not isinstance(H, nx.DiGraph)
+
+
+# ── GEXF / Gephi ──────────────────────────────────────────────────────────────
+
+def test_to_gephi_creates_file(vault, tmp_path):
+    out = tmp_path / "vault.gexf"
+    result = vault.graph.to_gephi(out)
+    assert result == out
+    assert out.exists()
+    assert out.stat().st_size > 0
+
+
+def test_to_gephi_readable(vault, tmp_path):
+    import networkx as nx
+    out = tmp_path / "vault.gexf"
+    vault.graph.to_gephi(out)
+    H = nx.read_gexf(str(out))
+    node_labels = {data.get("label", nid) for nid, data in H.nodes(data=True)}
+    assert "Alpha|Projekte" in node_labels or any("Alpha" in n for n in H.nodes)
+
+
+def test_to_gephi_directed_false(vault, tmp_path):
+    import networkx as nx
+    out = tmp_path / "vault_und.gexf"
+    vault.graph.to_gephi(out, directed=False)
+    H = nx.read_gexf(str(out))
+    assert not isinstance(H, nx.DiGraph)
