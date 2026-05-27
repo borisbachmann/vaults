@@ -1,8 +1,10 @@
 # vaults
 
-A Python package for data analytics on human-curated structured and relational data in Markdown format, built around [Obsidian](https://obsidian.md).
+A Python package for data analytics on human-curated structured and relational data in Markdown format, built around [Obsidian](https://obsidian.md). The core idea: You build a future-proof knowledge base in Markdown files on your disk using established and well-maintained tools. When you need more complex analytics, `vaults` provides an interface to established data formats used in the Python ecosystem.
 
-Files on disk are the source of truth. `vaults` parses `.md` records and Obsidian `.base` files into an interlinked in-memory snapshot, then exposes that data through multiple backends.
+Files on disk stay the source of truth. `vaults` treats your markdown files as relational data. It assumes a corresponding folder structure (see the [data contract](docs/contract/CONTRACT.md)) and offers linting to help you ensure relational consistency.
+
+Closing the analytical loop, `vaults` offers to-disk-writing capabilities for tasks like bulk-insertion of analytical results without touching existing data.
 
 ## Features
 
@@ -20,18 +22,16 @@ The above don't touch files on disk and are safe to use on original data. Use th
 ## Install
 
 ```bash
-git clone <repo-url>
-cd vaults
-pip install .
+pip install git+https://github.com/borisbachmann/vaults.git
 ```
 
 Optional extras for accessor backends:
 
 ```bash
-pip install ".[db]"      # DuckDB
-pip install ".[graph]"   # Kuzu
-pip install ".[polars]"  # Polars DataFrames
-pip install ".[all]"     # all of the above
+pip install "vaults[db] @ git+https://github.com/borisbachmann/vaults.git"      # DuckDB
+pip install "vaults[graph] @ git+https://github.com/borisbachmann/vaults.git"   # Kuzu
+pip install "vaults[polars] @ git+https://github.com/borisbachmann/vaults.git"  # Polars DataFrames
+pip install "vaults[all] @ git+https://github.com/borisbachmann/vaults.git"     # all of the above
 ```
 
 ## Quick start

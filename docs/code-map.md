@@ -6,7 +6,7 @@ Structural reference for the `vaults` package. Update when the code changes.
 
 | Module | Lines | Purpose |
 |--------|------:|---------|
-| `vaults/__init__.py` | 16 | Public API re-exports |
+| `vaults/__init__.py` | 18 | Public API re-exports |
 | `vaults/vault.py` | 350 | `Vault` dataclass, `from_vault()` loader, coercion helpers, formula/filter helpers |
 | `vaults/record.py` | 19 | `Record` dataclass |
 | `vaults/schema.py` | 224 | `Schema`, `TypeSchema`, `FieldSchema`, `FieldType` enum, type inference |
@@ -18,9 +18,9 @@ Structural reference for the `vaults` package. Update when the code changes.
 | `vaults/syntax/grammar.py` | 65 | Lark grammar definition, `_parser` singleton |
 | `vaults/syntax/runtime.py` | 527 | Proxy classes (`_FileProxy`, `_NoteProxy`, etc.), safe operators, method/global dispatch |
 | `vaults/accessors/__init__.py` | 5 | Re-exports accessor classes |
-| `vaults/accessors/dfs.py` | 405 | `DfsAccessor`, `TableAccessor`, `ViewsAccessor` — Arrow/pandas/polars output |
+| `vaults/accessors/dfs.py` | 469 | `DfsAccessor`, `TableAccessor`, `ViewsAccessor` — Arrow/pandas/polars/Parquet/CSV output |
 | `vaults/accessors/db.py` | 86 | `DbAccessor` — DuckDB export |
-| `vaults/accessors/graph.py` | 391 | `GraphAccessor` — NetworkX, Kuzu, RDF/Turtle export |
+| `vaults/accessors/graph.py` | 455 | `GraphAccessor` — NetworkX, Kuzu, RDF/Turtle, GraphML, GEXF export |
 | `vaults/expander/__init__.py` | 3 | Re-exports `Expander`, `EntryResult` |
 | `vaults/expander/operations.py` | 417 | `Expander` class — `add_records()`, `add_column()`, `add_type()` |
 | `vaults/expander/io.py` | 165 | File I/O — `_write_md_file`, `_patch_frontmatter_property`, `sanitize_filename` |
@@ -157,11 +157,16 @@ Vault.from_vault(path)
 
 ```
 vault.dfs["TypeName"]          -> TableAccessor -> to_arrow() / to_pandas() / to_polars()
+vault.dfs["TypeName"]          -> TableAccessor -> to_parquet(path) / to_csv(path)
 vault.dfs["TypeName"].views    -> ViewsAccessor -> ["ViewName"] -> TableAccessor (with view config)
+vault.dfs.to_arrow()           -> {type_name: pa.Table} dict for all types
+vault.dfs.to_parquet(dir)      -> writes all types as .parquet files into directory
 vault.db.to_duckdb()           -> DuckDB connection (type tables + join tables for links)
 vault.graph.to_networkx()      -> nx.DiGraph (nodes=records, edges=links)
 vault.graph.to_kuzu()          -> Kuzu connection (node tables + rel tables)
 vault.graph.to_rdf()           -> rdflib.Graph (OWL classes, properties, individuals)
+vault.graph.to_graphml(path)   -> GraphML XML file (Gephi, yEd compatible)
+vault.graph.to_gephi(path)     -> GEXF file (Gephi's native format)
 ```
 
 ### Expander data flow
@@ -298,24 +303,24 @@ __all__ = [
 | `dangling_vault` | Projekte (1), Personen (1) | Links to missing records and unknown types |
 | `malformed_vault` | Projekte (1+nested), Akteure (empty) | Mixed link targets, nested files, empty folders |
 
-### Test files (18 files, ~3,100 lines)
+### Test files (18 files, ~3,260 lines, 331 tests)
 | File | Tests | Covers |
 |------|------:|--------|
-| `test_schema_model.py` | 4 | Schema/TypeSchema/FieldSchema construction |
-| `test_schema_from_vault.py` | 14 | `Schema._from_vault()`, field type inference |
-| `test_schema_malformed_vault.py` | 12 | Edge cases: mixed links, nested files, empty types |
-| `test_schema_diff.py` | 15 | `Schema.diff()` |
+| `test_schema_model.py` | 6 | Schema/TypeSchema/FieldSchema construction |
+| `test_schema_from_vault.py` | 15 | `Schema._from_vault()`, field type inference |
+| `test_schema_malformed_vault.py` | 7 | Edge cases: mixed links, nested files, empty types |
+| `test_schema_diff.py` | 9 | `Schema.diff()` |
 | `test_inference.py` | 23 | `infer_field_type()`, `infer_link_target()` |
-| `test_vault_from_vault.py` | 17 | `Vault.from_vault()` record/schema population |
+| `test_vault_from_vault.py` | 16 | `Vault.from_vault()` record/schema population |
 | `test_vault_dangling_links.py` | 18 | Dangling ref modes: drop/stub |
-| `test_vault_staleness.py` | 7 | Fingerprint and `is_stale` |
-| `test_resolve_pairs.py` | 28 | `resolve_pairs()` bidirectional reconciliation |
-| `test_backlinks.py` | 22 | `_FileProxy.backlinks`, formula chain integration |
-| `test_linter_new_rules.py` | ~30 | Linter rules R-2, R-6, S-*, F-* |
-| `test_dfs_accessor.py` | 40 | Arrow/pandas/polars output, column ordering, views |
-| `test_coerce_types.py` | 20 | `_coerce_target`, `_coerce_value`, cache isolation |
-| `test_graph_accessor.py` | 28 | NetworkX, Kuzu names, RDF export |
-| `test_vault_to_db.py` | 30 | DuckDB tables, join tables, formula integration |
-| `test_expand_add_records.py` | 32 | `add_records()`, collision, sanitization, reverse links |
-| `test_expand_add_column.py` | 30 | `add_column()`, on_existing/on_missing modes |
-| `test_expand_add_type.py` | 28 | `add_type()`, base file generation |
+| `test_vault_staleness.py` | 6 | Fingerprint and `is_stale` |
+| `test_resolve_pairs.py` | 17 | `resolve_pairs()` bidirectional reconciliation |
+| `test_backlinks.py` | 11 | `_FileProxy.backlinks`, formula chain integration |
+| `test_linter_new_rules.py` | 14 | Linter rules R-2, R-6, S-*, F-* |
+| `test_dfs_accessor.py` | 41 | Arrow/pandas/polars/Parquet/CSV output, column ordering, views |
+| `test_coerce_types.py` | 8 | `_coerce_target`, `_coerce_value`, cache isolation |
+| `test_graph_accessor.py` | 47 | NetworkX, Kuzu names, RDF, GraphML, GEXF export |
+| `test_vault_to_db.py` | 25 | DuckDB tables, join tables, formula integration |
+| `test_expand_add_records.py` | 28 | `add_records()`, collision, sanitization, reverse links |
+| `test_expand_add_column.py` | 18 | `add_column()`, on_existing/on_missing modes |
+| `test_expand_add_type.py` | 22 | `add_type()`, base file generation |
