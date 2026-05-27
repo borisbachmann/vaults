@@ -549,7 +549,7 @@ class TableAccessor:
             import pandas as pd
         except ImportError as e:
             raise ImportError(
-                "to_pandas() requires pandas. Install with: pip install pandas"
+                "to_pandas() requires pandas. Install with: pip install vaults[pandas]"
             ) from e
         tbl = self.to_arrow(coerce_types=coerce_types)
         group_col = self._group_col

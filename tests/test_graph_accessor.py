@@ -221,7 +221,7 @@ def test_kuzu_no_missing_dep_error():
         import vaults
         v = vaults.Vault.from_vault(FIXTURE, dangling_refs="stub")
         ga = GraphAccessor(v)
-        with pytest.raises(ImportError, match="pip install kuzu"):
+        with pytest.raises(ImportError, match="pip install vaults\\[kuzu\\]"):
             ga.to_kuzu()
     finally:
         if kuzu_real is not None:
