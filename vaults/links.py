@@ -32,28 +32,101 @@ def _match_wikilink(value: str) -> Optional[list[str]]:
 
 
 def parse_wikilink(value: str) -> Optional[tuple[str, str]]:
-    """Return (folder, name) from a wikilink, or None."""
+    """
+    Parse a wikilink string into its folder and record-name components.
+
+    Uses the last two path segments of the wikilink target, which matches
+    Obsidian's disambiguation prefix convention (e.g. ``[[folder/name]]``).
+    Pipe aliases (``[[path|alias]]``) are stripped before parsing.
+
+    Parameters
+    ----------
+    value : str
+        A raw wikilink string, e.g. ``"[[Projects/Alpha]]"``.
+
+    Returns
+    -------
+    tuple of (str, str) or None
+        ``(folder, name)`` where ``folder`` is the second-to-last path segment
+        and ``name`` is the final segment. Returns None if ``value`` is not a
+        valid wikilink or has fewer than two path segments.
+    """
     parts = _match_wikilink(value)
     return (parts[-2], parts[-1]) if parts and len(parts) >= 2 else None
 
 
 def is_wikilink(value: str) -> bool:
+    """
+    Return True if ``value`` matches the wikilink pattern ``[[...]]``.
+
+    Parameters
+    ----------
+    value : str
+        Any string value from a record's frontmatter.
+
+    Returns
+    -------
+    bool
+    """
     return _match_wikilink(value) is not None
 
 
 def wikilink_target_folder(value: str) -> Optional[str]:
+    """
+    Extract the folder component (second-to-last path segment) from a wikilink.
+
+    Parameters
+    ----------
+    value : str
+        A raw wikilink string, e.g. ``"[[Projects/Alpha]]"``.
+
+    Returns
+    -------
+    str or None
+        The folder name, or None if ``value`` is not a valid wikilink or has
+        fewer than two path segments.
+    """
     parts = _match_wikilink(value)
     return parts[-2] if parts and len(parts) >= 2 else None
 
 
 def parse_wikilink_name(value: str) -> Optional[str]:
-    """Return the record name (last path segment) from a wikilink, or None."""
+    """
+    Extract the record name (last path segment) from a wikilink.
+
+    Parameters
+    ----------
+    value : str
+        A raw wikilink string, e.g. ``"[[Projects/Alpha]]"``.
+
+    Returns
+    -------
+    str or None
+        The final path segment (record name), or None if ``value`` is not a
+        valid wikilink.
+    """
     parts = _match_wikilink(value)
     return parts[-1] if parts else None
 
 
 def iter_link_names(value: Any) -> list[str]:
-    """Extract record name stems from a raw link field value (string or list)."""
+    """
+    Extract record name stems from a raw link field value.
+
+    Handles both scalar wikilink strings and lists containing wikilink strings.
+    Non-wikilink items are silently skipped.
+
+    Parameters
+    ----------
+    value : str, list, or None
+        Raw field value from a record, as stored in ``record.fields``.
+
+    Returns
+    -------
+    list of str
+        Record names (last path segments) parsed from any wikilinks found in
+        ``value``. Empty list if ``value`` is None or contains no valid wikilinks.
+    """
     if value is None:
         return []
     if isinstance(value, str):
@@ -81,10 +154,38 @@ def _write_link_field(
     field_schema: Optional[FieldSchema],
     expand_to_lists: bool,
 ) -> None:
-    """Write reconciled link targets back to a field on each record.
+    """
+    Write reconciled link targets back to a field on each record, mutating in-place.
 
-    Preserves existing wikilinks in their original order; appends any new
-    targets (sorted for determinism) discovered from the paired side.
+    Preserves existing wikilinks in their original order and appends any new
+    targets discovered from the paired side (sorted for determinism). Raises if
+    a singular LINK field would need to hold multiple targets and ``expand_to_lists``
+    is False.
+
+    Parameters
+    ----------
+    records : list of Record
+        All records of the type whose field is being written.
+    field_name : str
+        Name of the link field to update on each record.
+    record_to_targets : dict[str, set[str]]
+        Mapping of record name to the set of target record names that should
+        appear in the field after reconciliation.
+    link_target_folder : str
+        Folder component to use when constructing new wikilink strings
+        (e.g. ``"Projects"`` → ``"[[Projects/Alpha]]"``).
+    field_schema : FieldSchema or None
+        Schema for the field, used to determine whether it is a list field.
+        When None, the field is treated as a list field.
+    expand_to_lists : bool
+        When True, a singular LINK field that needs multiple targets is silently
+        promoted to a list with a warning. When False, that situation raises.
+
+    Raises
+    ------
+    ValueError
+        When a singular LINK field would require multiple targets and
+        ``expand_to_lists`` is False.
     """
     is_list_field = field_schema is None or field_schema.type in (FieldType.LIST_LINKS, FieldType.LIST_MIXED)
 
@@ -139,11 +240,30 @@ def _write_link_field(
 
 
 def resolve_pairs(vault: Vault, expand_to_lists: bool = True) -> None:
-    """Reconcile paired link fields across all records in-place.
+    """
+    Reconcile paired link fields across all records, mutating the vault in-place.
 
-    For each declared pair (TypeA.field_x, TypeB.field_y), computes the
-    outer union of edges asserted on either side and writes the complete
-    set back to both fields on every relevant record.
+    For each declared relationship pair ``(TypeA.field_x, TypeB.field_y)``,
+    computes the outer union of edges asserted on either side (snapshot before
+    any writes) and writes the complete edge set back to both fields on every
+    relevant record. Fields absent from the schema are added to it when new edges
+    are discovered.
+
+    Parameters
+    ----------
+    vault : Vault
+        The loaded vault whose ``relationship_pairs`` and ``records`` are used.
+        Records are mutated in-place; schema may gain new FieldSchema entries.
+    expand_to_lists : bool
+        Forwarded to ``_write_link_field``. When True, singular LINK fields that
+        acquire multiple targets are promoted to lists with a warning. When False,
+        that situation raises instead.
+
+    Raises
+    ------
+    ValueError
+        When ``expand_to_lists`` is False and a singular LINK field would need
+        multiple targets after reconciliation.
     """
     if not vault.relationship_pairs:
         return
@@ -227,6 +347,35 @@ def apply_dangling_refs(
     schema: Schema,
     records: dict[str, list[Record]],
 ) -> dict[str, list[Record]]:
+    """
+    Resolve wikilinks that point to records or types not present in the vault.
+
+    Iterates every link-typed field across all records. For each link whose
+    target record or target type does not exist, either drops the link or
+    creates a stub Record (and stub TypeSchema when the target type is unknown),
+    according to ``dangling_refs``.
+
+    Stub records carry no fields and are appended to ``records`` so that graph
+    and DataFrame accessors have a node to attach edges to, preventing silent
+    data loss. Stub types are added to ``schema.types`` with an empty field list.
+
+    Parameters
+    ----------
+    dangling_refs : str
+        Policy for unresolvable links. ``"drop"`` removes them from the field
+        value (sets singular links to None, filters them from lists). Any other
+        value (e.g. ``"stub"``) creates placeholder records instead.
+    schema : Schema
+        The vault's schema, mutated in-place when stub types are created.
+    records : dict[str, list[Record]]
+        Mapping of type name to record list, mutated in-place when stubs are
+        appended.
+
+    Returns
+    -------
+    dict[str, list[Record]]
+        The same ``records`` dict, mutated in-place and returned for convenience.
+    """
     existing: dict[str, set[str]] = {
         type_name: {r.name for r in recs}
         for type_name, recs in records.items()

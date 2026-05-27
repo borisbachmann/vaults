@@ -24,6 +24,26 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class EntryResult:
+    """
+    Result for a single record processed by an expander write operation.
+
+    Parameters
+    ----------
+    filename : str
+        The filename stem that was written (or attempted). Empty string when
+        the record was skipped before a filename could be determined.
+    status : {"processed", "warning", "skipped"}
+        Overall outcome. ``"processed"`` means the record was written cleanly;
+        ``"warning"`` means it was written but with at least one advisory
+        condition (see ``warning_types``); ``"skipped"`` means it was not
+        written.
+    warning_types : list of str
+        Advisory codes describing what happened. May include ``"sanitization"``,
+        ``"collision"``, ``"new_property"``, ``"dropped_property"``,
+        ``"overwrite"``, ``"skipped_missing"``, ``"skipped_existing"``,
+        ``"skipped_missing_filename"``, or ``"skipped_validation"``.
+    """
+
     filename: str
     status: Literal["processed", "warning", "skipped"]
     warning_types: list[str] = field(default_factory=list)
@@ -35,7 +55,24 @@ def _update_reverse_links(
     written: list[tuple[str, dict]],
     data_root: Path,
 ) -> None:
-    """Write the reverse side of declared relationship pairs for newly added records."""
+    """
+    Write the reverse side of declared relationship pairs for newly added records.
+
+    For each relationship pair involving ``type_name``, reads the link fields of
+    the just-written records and appends back-links to the target records on disk.
+    Target files that do not exist are silently skipped.
+
+    Parameters
+    ----------
+    vault : Vault
+        The vault providing ``relationship_pairs`` for traversal.
+    type_name : str
+        The type that was just written to (``add_records`` caller).
+    written : list of (str, dict)
+        Filename stems and field dicts of the records that were written.
+    data_root : Path
+        Absolute path to the vault's data folder, used to resolve target file paths.
+    """
     from ..links import parse_wikilink
 
     for pair in vault.relationship_pairs:
@@ -95,7 +132,52 @@ def _process_batch(
     list[tuple[int, str, dict, str]],
     list[str],
 ]:
-    """Process a batch of normalized records; return (failures, results, to_write, all_props)."""
+    """
+    Validate and prepare a batch of normalised records for writing.
+
+    Handles filename sanitization, collision detection, unknown property
+    warnings or drops, and null normalization. Does not perform any disk I/O.
+
+    Parameters
+    ----------
+    normalized : list of dict
+        Row dicts as returned by ``_to_records``. Each dict must contain
+        ``filename_col`` as a key.
+    type_name : str
+        The vault type being written to, used in log messages.
+    filename_col : str
+        The dict key whose value becomes the filename stem.
+    known_fields : set of str or None
+        Schema-defined field names for the type. When None (new type), all
+        properties are accepted without warnings.
+    disk_stems : set of str
+        Filename stems already present on disk for this type.
+    allow_new_properties : bool
+        When True, fields absent from ``known_fields`` are kept and logged as
+        warnings. When False, they are dropped and logged.
+    on_invalid : str
+        ``"error"`` or ``"skip"`` — controls handling of records that fail
+        validation (missing filename). Actual error-raising is deferred to
+        ``_handle_failures``.
+    on_collision : str
+        ``"error"`` or ``"suffix"`` — controls handling of filename collisions.
+    on_missing_filename : str
+        ``"error"`` or ``"skip"`` — controls handling of records with no
+        value in ``filename_col``.
+
+    Returns
+    -------
+    failures : list of (int, str or None, str)
+        Tuples of ``(index, filename_or_None, reason)`` for records that
+        cannot be written.
+    results : list of EntryResult or None
+        Per-record results in input order. None at positions not yet resolved.
+    to_write : list of (int, str, dict, str)
+        Tuples of ``(index, filename, fields, body)`` for records ready to write.
+    all_props : list of str
+        Ordered unique list of all field names seen across the valid records
+        (used by ``add_type`` to populate the ``.base`` file column order).
+    """
     batch_stems: set[str] = set()
     failures: list[tuple[int, str | None, str]] = []
     results: list[EntryResult | None] = [None] * len(normalized)
@@ -197,6 +279,31 @@ def _handle_failures(
     type_name: str,
     method: str,
 ) -> None:
+    """
+    Raise or log validation failures collected by ``_process_batch``.
+
+    Parameters
+    ----------
+    failures : list of (int, str or None, str)
+        Tuples of ``(index, filename_or_None, reason)`` as returned by
+        ``_process_batch``.
+    results : list of EntryResult or None
+        Per-record results list, mutated in-place to mark failed records as
+        ``"skipped"`` when ``on_invalid="skip"``.
+    on_invalid : str
+        ``"error"`` raises a ValueError listing all failures. ``"skip"``
+        marks each failed record as skipped and logs a warning.
+    type_name : str
+        The vault type name, used in error and log messages.
+    method : str
+        The calling method name (``"add_records"`` or ``"add_type"``), used
+        in error and log messages.
+
+    Raises
+    ------
+    ValueError
+        When ``on_invalid="error"`` and ``failures`` is non-empty.
+    """
     if not failures:
         return
     if on_invalid == "error":
@@ -219,6 +326,16 @@ def _handle_failures(
 
 
 class Expander:
+    """
+    Write layer for expanding a vault with new records, columns, or types.
+
+    All operations check for vault staleness before writing, write only into
+    existing or newly created type directories, and call ``vault.reload()``
+    on completion so the in-memory state reflects the new disk state.
+
+    Accessed via ``vault.expand``, which lazily constructs and caches this accessor.
+    """
+
     def __init__(self, vault: "Vault") -> None:
         self._vault = vault
 
@@ -233,6 +350,44 @@ class Expander:
         on_collision: Literal["error", "suffix"] = "error",
         on_missing_filename: Literal["error", "skip"] = "error",
     ) -> list[EntryResult]:
+        """
+        Write new Markdown records to an existing type directory.
+
+        Validates, sanitizes, and writes each record as a ``.md`` file. After
+        writing, appends back-links on paired relationship fields in target
+        records, then reloads the vault.
+
+        Parameters
+        ----------
+        type_name : str
+            The vault type to write into. Must already exist in the schema.
+        records : list[dict], dict[str, list], DataFrame, or Series
+            Tabular input. Each row becomes one Markdown file.
+        filename_col : str
+            The column whose values are used as filename stems.
+        allow_new_properties : bool
+            When True, fields not in the type's schema are written and logged
+            as warnings. When False, they are silently dropped.
+        on_invalid : {"error", "skip"}
+            How to handle records that fail validation (e.g. missing filename).
+        on_collision : {"error", "suffix"}
+            How to handle filename collisions with existing files.
+        on_missing_filename : {"error", "skip"}
+            How to handle records with a null or missing ``filename_col`` value.
+
+        Returns
+        -------
+        list of EntryResult
+            One result per input record, in input order.
+
+        Raises
+        ------
+        ValueError
+            When ``type_name`` is not in the schema, or when ``on_invalid="error"``
+            and any records fail validation.
+        RuntimeError
+            When the vault is stale (disk changed since last load).
+        """
         _check_stale(self._vault)
         normalized = _to_records(records)
 
@@ -282,6 +437,41 @@ class Expander:
         on_existing: Literal["error", "skip", "overwrite"] = "error",
         on_missing: Literal["error", "skip"] = "error",
     ) -> list[EntryResult]:
+        """
+        Write a new frontmatter property to all records of an existing type.
+
+        Patches each record's ``.md`` file in-place using a surgical insert
+        (new property) or a frontmatter round-trip (overwrite). Reloads the
+        vault after all writes.
+
+        Parameters
+        ----------
+        type_name : str
+            The vault type whose records are patched. Must already exist in
+            the schema.
+        column : dict[str, Any], pd.Series, or pl.Series
+            Mapping of record name (filename stem) to the value to write.
+        property_name : str
+            The frontmatter key to insert or update on each record.
+        on_existing : {"error", "skip", "overwrite"}
+            How to handle records where ``property_name`` already exists.
+        on_missing : {"error", "skip"}
+            How to handle records not covered by the ``column`` mapping.
+
+        Returns
+        -------
+        list of EntryResult
+            One result per record in the type, in vault record order.
+
+        Raises
+        ------
+        ValueError
+            When ``type_name`` is not in the schema, or when ``on_existing="error"``
+            and any records already have the property, or when ``on_missing="error"``
+            and any records are not in the column mapping.
+        RuntimeError
+            When the vault is stale.
+        """
         _check_stale(self._vault)
 
         if type_name not in self._vault.schema.types:
@@ -373,6 +563,46 @@ class Expander:
         on_collision: Literal["error", "suffix"] = "error",
         on_missing_filename: Literal["error", "skip"] = "error",
     ) -> list[EntryResult]:
+        """
+        Create a new vault type with its directory, records, and ``.base`` file.
+
+        Creates the type directory under the data folder, writes all records as
+        ``.md`` files, and generates a minimal ``.base`` file with a table view
+        ordered by the fields found in the batch. Raises if the type already exists.
+        Reloads the vault after writing.
+
+        Parameters
+        ----------
+        type_name : str
+            Name of the new type. Must not already exist in the schema.
+        records : list[dict], dict[str, list], DataFrame, or Series
+            Tabular input. Each row becomes one Markdown file.
+        filename_col : str
+            The column whose values are used as filename stems.
+        allow_new_properties : bool
+            Passed through to ``_process_batch``. Always effectively True for
+            new types since there is no schema to check against, but kept for
+            API consistency.
+        on_invalid : {"error", "skip"}
+            How to handle records that fail validation.
+        on_collision : {"error", "suffix"}
+            How to handle filename collisions within the batch.
+        on_missing_filename : {"error", "skip"}
+            How to handle records with a null or missing ``filename_col`` value.
+
+        Returns
+        -------
+        list of EntryResult
+            One result per input record, in input order.
+
+        Raises
+        ------
+        ValueError
+            When ``type_name`` already exists in the schema, or when
+            ``on_invalid="error"`` and any records fail validation.
+        RuntimeError
+            When the vault is stale.
+        """
         _check_stale(self._vault)
         normalized = _to_records(records)
 

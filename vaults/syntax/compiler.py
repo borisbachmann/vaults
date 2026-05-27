@@ -41,12 +41,49 @@ class BasesCompiler:
     """
 
     def parse(self, expression: str) -> Tree:
-        """Parse *expression* into a Lark AST."""
+        """
+        Parse a formula expression string into a Lark AST.
+
+        Parameters
+        ----------
+        expression : str
+            A raw Obsidian Bases formula or filter expression string.
+
+        Returns
+        -------
+        lark.Tree
+            The parsed AST, ready for compilation via ``_compile``.
+
+        Raises
+        ------
+        lark.exceptions.UnexpectedInput
+            When the expression does not conform to the grammar.
+        """
         return _parser.parse(expression)
 
     # ── public API ───────────────────────────────────────────────
 
     def translate(self, expression: str) -> Callable[[EvalContext], Any]:
+        """
+        Compile a formula expression into a callable that evaluates against an EvalContext.
+
+        Parse and compile errors are captured rather than raised. When any error
+        occurs, the returned callable carries a ``translation_error`` attribute
+        (a string description) so callers can detect compilation failure without
+        try/except. Evaluation exceptions at runtime are caught and return None.
+
+        Parameters
+        ----------
+        expression : str
+            A raw Obsidian Bases formula expression string.
+
+        Returns
+        -------
+        callable
+            A function ``(EvalContext) -> Any`` that evaluates the formula.
+            When compilation failed, the callable has a ``translation_error: str``
+            attribute and always returns None.
+        """
         errors: list[str] = []
         try:
             tree = self.parse(expression)
@@ -65,6 +102,24 @@ class BasesCompiler:
         return evaluate
 
     def translate_filter(self, expression: str) -> Callable[[EvalContext], bool]:
+        """
+        Compile a filter expression into a boolean callable.
+
+        Wraps ``translate`` and casts the result to bool. A compilation failure
+        is propagated transparently — the returned callable will carry
+        ``translation_error`` just as ``translate`` would return.
+
+        Parameters
+        ----------
+        expression : str
+            A raw Obsidian Bases filter expression string.
+
+        Returns
+        -------
+        callable
+            A function ``(EvalContext) -> bool``. On compilation failure, the
+            callable has a ``translation_error: str`` attribute.
+        """
         inner = self.translate(expression)
         if hasattr(inner, "translation_error"):
             return inner  # type: ignore[return-value]
@@ -141,6 +196,8 @@ class BasesCompiler:
     # ── names & access ───────────────────────────────────────────
 
     def _c_name(self, node: Tree, errors: list[str]) -> _Fn:
+        # Routes well-known namespaces (file, this, note, formula) to their proxy
+        # objects; falls back to scope-then-record-field lookup for plain identifiers.
         ident = str(node.children[0])
         if ident == "file":
             return lambda ctx, scope: _FileProxy(ctx.record, ctx.vault)
@@ -163,6 +220,9 @@ class BasesCompiler:
     # ── method calls ─────────────────────────────────────────────
 
     def _c_method_call(self, node: Tree, errors: list[str]) -> _Fn:
+        # filter/map/reduce are special-cased here to inject `value` and `index`
+        # into the scope dict, enabling lambda-style predicates without a lambda keyword.
+        # All other methods are dispatched through _call_method at runtime.
         obj_fn = self._compile(node.children[0], errors)
         method = str(node.children[1])
         arg_tree = node.children[2]
@@ -205,6 +265,10 @@ class BasesCompiler:
     # ── function calls ───────────────────────────────────────────
 
     def _c_func_call(self, node: Tree, errors: list[str]) -> _Fn:
+        # if() is short-circuited here (only one branch is evaluated).
+        # _DISPLAY_FUNCS (image, icon, html, escapeHTML) are silently dropped to None
+        # since they have no meaningful Python equivalent.
+        # Unknown function names are recorded as compilation errors.
         name = str(node.children[0])
         arg_tree = node.children[1]
         raw_args = arg_tree.children if arg_tree is not None else []

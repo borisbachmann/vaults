@@ -173,6 +173,24 @@ _DURATION_RE = re.compile(
 
 
 def _parse_duration(s: Any) -> datetime.timedelta | None:
+    """
+    Parse an Obsidian Bases duration string into a timedelta.
+
+    Supports years (y), months (M), weeks (w), days (d), hours (h), minutes (m),
+    and seconds (s) with optional long-form suffixes. Month = 30 days, year = 365
+    days — matches Bases' approximate semantics, not calendar arithmetic.
+
+    Parameters
+    ----------
+    s : Any
+        A duration string such as ``"2d"``, ``"1 month"``, ``"3h 30m"``, or any
+        object that can be cast to str. Non-duration strings return None.
+
+    Returns
+    -------
+    datetime.timedelta or None
+        The parsed duration, or None when no duration tokens are found in ``s``.
+    """
     total = datetime.timedelta()
     found = False
     for m in _DURATION_RE.finditer(str(s)):
@@ -200,6 +218,23 @@ def _parse_duration(s: Any) -> datetime.timedelta | None:
 
 
 def _safe_add(a: Any, b: Any) -> Any:
+    """
+    Add two values with None-safety and date/duration awareness.
+
+    Handles date + duration-string, date + timedelta, timedelta + timedelta, and
+    ordinary numeric/string addition. Returns None when either operand is None or
+    when the addition raises TypeError.
+
+    Parameters
+    ----------
+    a, b : Any
+        The operands. May be numbers, strings, dates, datetimes, or timedeltas.
+
+    Returns
+    -------
+    Any
+        The result of the addition, or None on failure.
+    """
     if a is None or b is None:
         return None
     if isinstance(a, (datetime.datetime, datetime.date)):
@@ -219,6 +254,24 @@ def _safe_add(a: Any, b: Any) -> Any:
 
 
 def _safe_sub(a: Any, b: Any) -> Any:
+    """
+    Subtract two values with None-safety and date arithmetic awareness.
+
+    date - date returns the difference in milliseconds (both operands are
+    promoted to datetime first). date - duration-string or date - timedelta
+    returns a shifted date. All other cases fall through to ``a - b``.
+
+    Parameters
+    ----------
+    a, b : Any
+        The operands.
+
+    Returns
+    -------
+    Any
+        The result of the subtraction, or None when either operand is None or
+        when subtraction raises TypeError.
+    """
     if a is None or b is None:
         return None
     if isinstance(a, (datetime.datetime, datetime.date)):
@@ -248,6 +301,24 @@ _COMP_OPS: dict[str, Callable[[Any, Any], bool]] = {
 
 
 def _safe_compare(op: str, a: Any, b: Any) -> bool:
+    """
+    Apply a comparison operator with None-safety and TypeError suppression.
+
+    When either operand is None, only ``==`` (identity) and ``!=`` return
+    meaningful results; all other operators return False. TypeError from
+    incompatible types (e.g. str > int) also returns False.
+
+    Parameters
+    ----------
+    op : str
+        One of ``"=="``, ``"!="`` , ``">"``, ``"<"``, ``">="`` , ``"<="``.
+    a, b : Any
+        The values to compare.
+
+    Returns
+    -------
+    bool
+    """
     if a is None or b is None:
         if op == "==":
             return a is b
@@ -269,6 +340,26 @@ _PROP_MAP: dict[str, Callable[[Any], Any]] = {
 
 
 def _dot(obj: Any, attr: str) -> Any:
+    """
+    Attribute access with fallback chain: _PROP_MAP → dict key → getattr.
+
+    ``_PROP_MAP`` handles virtual properties such as ``length`` and
+    ``millisecond`` that are not real Python attributes. Dict objects are
+    accessed by key before falling through to getattr.
+
+    Parameters
+    ----------
+    obj : Any
+        The object to access an attribute on.
+    attr : str
+        The attribute name from the formula (e.g. ``"length"``, ``"name"``).
+
+    Returns
+    -------
+    Any
+        The attribute value, or None when ``obj`` is None or the attribute
+        cannot be found by any path.
+    """
     if obj is None:
         return None
     prop = _PROP_MAP.get(attr)
@@ -283,6 +374,25 @@ def _dot(obj: Any, attr: str) -> Any:
 
 
 def _index(obj: Any, idx: Any) -> Any:
+    """
+    Safe index/key access that returns None instead of raising.
+
+    Numeric indices (int or float) are cast to int for sequence access.
+    String indices are used as dict keys or passed to ``__getitem__`` on
+    objects that support it.
+
+    Parameters
+    ----------
+    obj : Any
+        The sequence, dict, or indexable object.
+    idx : Any
+        The index or key.
+
+    Returns
+    -------
+    Any
+        The value at ``idx``, or None on IndexError, KeyError, or TypeError.
+    """
     if obj is None:
         return None
     if isinstance(idx, (int, float)):
@@ -331,6 +441,25 @@ _MOMENT_TO_STRFTIME = [
 
 
 def _format_date(obj: Any, fmt: str) -> str:
+    """
+    Format a date or datetime using a moment.js-style format string.
+
+    Translates moment.js tokens (e.g. ``YYYY``, ``MM``, ``DD``) to Python
+    ``strftime`` directives before calling ``strftime``. Non-date objects
+    are cast to str.
+
+    Parameters
+    ----------
+    obj : Any
+        A date or datetime object. Non-date values are returned as ``str(obj)``.
+    fmt : str
+        A moment.js-style format string (e.g. ``"YYYY-MM-DD"``).
+
+    Returns
+    -------
+    str
+        The formatted date string.
+    """
     if not hasattr(obj, "strftime"):
         return str(obj)
     result = fmt
@@ -340,6 +469,25 @@ def _format_date(obj: Any, fmt: str) -> str:
 
 
 def _relative_date(obj: Any, now: datetime.datetime) -> str:
+    """
+    Return a human-readable relative date string (e.g. ``"3 days ago"``).
+
+    ``date`` objects are promoted to midnight ``datetime`` for arithmetic.
+    Granularity: seconds < 60 → "just now"; minutes < 60; hours < 24; days.
+
+    Parameters
+    ----------
+    obj : Any
+        A date or datetime to describe relative to ``now``. Non-date values
+        are returned as ``str(obj)``.
+    now : datetime.datetime
+        The reference point, typically frozen at vault load time.
+
+    Returns
+    -------
+    str
+        A human-readable relative time string.
+    """
     if not isinstance(obj, (datetime.date, datetime.datetime)):
         return str(obj)
     if isinstance(obj, datetime.date) and not isinstance(obj, datetime.datetime):
@@ -363,6 +511,19 @@ def _relative_date(obj: Any, now: datetime.datetime) -> str:
 
 
 def _parse_date(s: Any) -> datetime.datetime | datetime.date | None:
+    """
+    Parse an ISO 8601 date or datetime string, passing through existing date objects.
+
+    Parameters
+    ----------
+    s : Any
+        An ISO date/datetime string, an existing date or datetime object, or None.
+
+    Returns
+    -------
+    datetime.datetime, datetime.date, or None
+        The parsed value, or None when parsing fails or ``s`` is None.
+    """
     if s is None:
         return None
     if isinstance(s, (datetime.datetime, datetime.date)):
@@ -377,6 +538,23 @@ def _parse_date(s: Any) -> datetime.datetime | datetime.date | None:
 
 
 def _to_number(val: Any) -> int | float | None:
+    """
+    Coerce a value to a number, matching Obsidian Bases' ``number()`` semantics.
+
+    Booleans map to 1/0. Dates and datetimes are converted to milliseconds
+    since the Unix epoch (matching JavaScript's ``Date.getTime()``). Strings
+    are parsed as float and returned as int when lossless. Returns None on
+    failure.
+
+    Parameters
+    ----------
+    val : Any
+        The value to coerce.
+
+    Returns
+    -------
+    int, float, or None
+    """
     if val is None:
         return None
     if isinstance(val, bool):
@@ -397,6 +575,26 @@ def _to_number(val: Any) -> int | float | None:
 # ── Link resolution ──────────────────────────────────────────────
 
 def _resolve_link(link_str: Any, ctx: EvalContext) -> _FileProxy | None:
+    """
+    Resolve a wikilink string to the matching record's _FileProxy.
+
+    Parses the wikilink target and searches the vault's records for a match.
+    When the target contains a folder prefix (``[[folder/name]]``), only that
+    type's records are searched. Otherwise all types are searched.
+
+    Parameters
+    ----------
+    link_str : Any
+        A wikilink string such as ``"[[Projects/Alpha]]"`` or ``"[[Alpha]]"``.
+    ctx : EvalContext
+        The evaluation context providing vault access.
+
+    Returns
+    -------
+    _FileProxy or None
+        A proxy for the matched record, or None when no match is found or
+        ``link_str`` is not a valid wikilink.
+    """
     if not link_str or not ctx.vault:
         return None
     m = WIKILINK_RE.match(str(link_str).strip())
@@ -417,7 +615,26 @@ def _resolve_link(link_str: Any, ctx: EvalContext) -> _FileProxy | None:
 
 
 def _link_contains(obj: Any, search: Any) -> bool:
-    """Membership check that compares wikilinks by target name, not raw string."""
+    """
+    Membership check that compares wikilinks by target name, not raw string.
+
+    When ``search`` is a wikilink, its record-name component is extracted and
+    compared against the record-name components of wikilinks in ``obj``. This
+    prevents false negatives caused by different path prefixes in otherwise
+    equivalent links.
+
+    Parameters
+    ----------
+    obj : str or list
+        The field value to search within.
+    search : Any
+        The value to search for. Wikilinks are compared by name; plain strings
+        use ``in`` containment.
+
+    Returns
+    -------
+    bool
+    """
     if not isinstance(obj, (str, list)):
         return False
     search_name = parse_wikilink_name(str(search)) if isinstance(search, str) else None
@@ -486,6 +703,29 @@ _METHODS: dict[str, Callable[..., Any]] = {
 
 
 def _call_method(obj: Any, method: str, args: list, ctx: EvalContext) -> Any:
+    """
+    Dispatch a method call on ``obj``, with fallback to the object's own methods.
+
+    Checks ``_METHODS`` first (the Bases method registry); if not found, tries
+    ``getattr(obj, method)`` and calls it. Returns None for unknown methods or
+    when ``obj`` is None.
+
+    Parameters
+    ----------
+    obj : Any
+        The receiver object.
+    method : str
+        The method name as it appears in the formula.
+    args : list
+        Already-evaluated argument values.
+    ctx : EvalContext
+        Passed through to method handlers that need vault or record access.
+
+    Returns
+    -------
+    Any
+        The method result, or None when the method is not found or ``obj`` is None.
+    """
     if obj is None:
         return None
     handler = _METHODS.get(method)
@@ -521,6 +761,23 @@ _DISPLAY_FUNCS = frozenset({"image", "icon", "html", "escapeHTML"})
 
 
 def _untranslatable(reason: str) -> Callable[[EvalContext], None]:
+    """
+    Return a sentinel callable that signals a compilation failure.
+
+    The returned function always returns None and carries a ``translation_error``
+    attribute so callers can detect compilation failure with ``hasattr(fn,
+    "translation_error")`` rather than try/except.
+
+    Parameters
+    ----------
+    reason : str
+        A human-readable description of why the expression could not be compiled.
+
+    Returns
+    -------
+    callable
+        A no-op ``(EvalContext) -> None`` with ``translation_error: str`` set.
+    """
     def _fail(_ctx: EvalContext) -> None:
         return None
     _fail.translation_error = reason  # type: ignore[attr-defined]

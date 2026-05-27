@@ -62,6 +62,30 @@ RULES: dict[str, str] = {
 
 @dataclass
 class LintViolation:
+    """
+    A single linting finding, scoped to a rule, type, and optionally a field.
+
+    Parameters
+    ----------
+    severity : {"error", "warning", "suggestion"}
+        How serious the violation is. ``"error"`` indicates a structural problem
+        that will likely cause incorrect behaviour; ``"warning"`` is a recoverable
+        inconsistency; ``"suggestion"`` is a fixable asymmetry (e.g. missing backlinks).
+    message : str
+        Human-readable description of the specific violation instance.
+    rule : str or None
+        Rule identifier (e.g. ``"R-2"``, ``"F-3"``). Maps to a description in
+        ``RULES``. None for ad-hoc violations not tied to a named rule.
+    type_name : str or None
+        The vault type where the violation was detected, if applicable.
+    field_name : str or None
+        The specific field within ``type_name`` where the violation was detected,
+        if applicable.
+    details : dict or None
+        Structured data for programmatic inspection (e.g. lists of affected record
+        names, per-folder link counts). Schema varies by rule.
+    """
+
     severity: Literal["error", "warning", "suggestion"]
     message: str
     rule: Optional[str] = None
@@ -81,7 +105,29 @@ class LintViolation:
 def topo_sort_formulas(
     formula_fields: list[FieldSchema],
 ) -> tuple[list[FieldSchema], list[FieldSchema]]:
-    """Kahn's algorithm topological sort. Returns (ordered, cyclic)."""
+    """
+    Order formula fields by inter-formula dependency using Kahn's algorithm.
+
+    Dependencies are detected by scanning each formula string for ``formula.<name>``
+    references. Fields with no unresolved dependencies are evaluated first; any
+    fields involved in a cycle are collected separately so callers can handle them
+    (typically by setting their output to None).
+
+    Parameters
+    ----------
+    formula_fields : list of FieldSchema
+        All FORMULA-typed fields for a single type, as returned by
+        ``[f for f in type_schema.fields if f.type == FieldType.FORMULA]``.
+
+    Returns
+    -------
+    ordered : list of FieldSchema
+        Fields in a valid evaluation order (dependencies before dependents).
+        Fields not involved in any cycle are guaranteed to appear here.
+    cyclic : list of FieldSchema
+        Fields that could not be ordered due to circular dependencies. These
+        are also reported as F-3 violations by the linter.
+    """
     by_name = {f.name: f for f in formula_fields}
     deps: dict[str, set[str]] = {}
     for f in formula_fields:
@@ -118,11 +164,40 @@ def _is_cross_platform_safe(name: str) -> bool:
 
 
 class Linter:
+    """
+    Checks relational and cross-record consistency rules against a loaded Vault.
+
+    Covers structural (S-*), record-level (R-*), and formula (F-*) rules as
+    described in the module docstring. Intended to be constructed and called once
+    per lint pass; ``Vault.lint()`` is the normal entry point.
+
+    Parameters
+    ----------
+    vault : Vault
+        The loaded vault to inspect.
+    homogeneity_threshold : float
+        Minimum minority fraction that triggers an R-1 violation. A value of
+        ``0.0`` (default) only flags fields present in *some but not all*
+        records; ``0.1`` suppresses violations where fewer than 10% of records
+        are on the minority side.
+    """
+
     def __init__(self, vault: Vault, *, homogeneity_threshold: float = 0.0) -> None:
         self.vault = vault
         self.homogeneity_threshold = homogeneity_threshold
 
     def lint(self) -> list[LintViolation]:
+        """
+        Run all rule categories and return every violation found.
+
+        Executes structure checks (S-*), record checks (R-*), and formula checks
+        (F-*) in that order. Results from each category are concatenated.
+
+        Returns
+        -------
+        list of LintViolation
+            All violations across all rule categories, in discovery order.
+        """
         violations: list[LintViolation] = []
         violations.extend(self._check_structure())
         violations.extend(self._check_records())

@@ -41,7 +41,12 @@ The user drives the build process step by step and orchestrates what gets built.
 
 Always create and run tests. Vault fixtures in `tests/fixtures`.
 
+Always create docstrings according to the below `Docstrings` rules.
+
 ## Git hygiene
+
+If not prompted explicitly, the standard is: the user handles git. If you are tasked, the following 
+rules apply:
 
 Never commit files that may contain personal information or local environment details. This includes (but is not limited to):
 - `.claude/settings.local.json` — may contain absolute paths
@@ -50,7 +55,69 @@ Never commit files that may contain personal information or local environment de
 
 When in doubt, add the file to `.gitignore` rather than committing it.
 
+## Docstrings
+Follow NumPy docstring style for all Python documentation.
+
+### How to add docstrings to an existing codebase
+Work module by module, not package-wide. Process one file at a time, review the output before moving on, and only proceed once the current module looks correct.
+
+### When to write docstrings
+- All public functions, methods, and classes
+- Private functions that contain non-obvious logic or assumptions
+- Skip trivial property accessors and __repr__/__str__ unless behaviour is non-standard
+
+### What to document
+Focus on information that is not apparent from the code itself:
+- The purpose and intent — not a restatement of the function name
+- Non-obvious parameter constraints (e.g. expected shape, dtype, value range)
+- Assumptions and preconditions
+- Known edge cases or failure modes
+- References to papers, algorithms, or external resources where applicable
+
+Do not write docstrings that merely restate what the signature already communicates.
+
+### Format
+```python
+def function(param1: np.ndarray, param2: float) -> np.ndarray:
+    """
+    Short one-line summary (imperative mood, no period).
+
+    Extended description if needed. Explain intent, assumptions,
+    or relevant theoretical background here.
+
+    Parameters
+    ----------
+    param1 : np.ndarray of shape (n_samples, n_features)
+        Description including expected dtype or value range if relevant.
+    param2 : float
+        Description. Note valid range or constraints if non-obvious.
+
+    Returns
+    -------
+    np.ndarray of shape (n_samples,)
+        Description of what is returned and what it represents.
+
+    Raises
+    ------
+    ValueError
+        When and why this is raised.
+
+    Notes
+    -----
+    Relevant implementation notes, algorithm references, or caveats.
+    For research code, cite papers here:
+    "Based on the method described in Smith et al. (2021) [1]_."
+
+    References
+    ----------
+    .. [1] Smith, J. et al. (2021). "Paper Title". Journal, vol(issue), pp.
+
+    Examples
+    --------
+    >>> result = function(X, 0.5)
+    """
+```
+
 ## Data contract
 
-The Vault operates on markdown files organized along type-exclusive directories within a common folder in the filesystem's vault root (`/data/` by default). Corresponding Obsidian `.base` files have the same name as the typed folders and also sit in a common folder  (`/bases/` by default). See `docs/contract/contract.md` for details.
-
+The Vault operates on markdown files organized along type-exclusive directories within a common folder in the file system's vault root (`/data/` by default). Corresponding Obsidian `.base` files have the same name as the typed folders and also sit in a common folder (`/bases/` by default). See `docs/contract/contract.md` for details.

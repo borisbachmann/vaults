@@ -7,6 +7,7 @@ name = "vaults"
 version = "0.1.0"
 description = "Data analytics on human-curated structured and relational data in Markdown format, built around Obsidian."
 license = "MIT"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "python-frontmatter",
@@ -22,8 +23,7 @@ dependencies = [
 [project.optional-dependencies]
 polars = ["polars"]
 db     = ["duckdb"]
-graph  = ["kuzu"]
-dfs    = ["polars"]
+kuzu   = ["kuzu"]
 all    = ["polars", "duckdb", "kuzu"]
 dev    = ["pytest", "polars", "duckdb", "kuzu"]
 

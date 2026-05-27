@@ -29,7 +29,7 @@ Optional extras for accessor backends:
 
 ```bash
 pip install "vaults[db] @ git+https://github.com/borisbachmann/vaults.git"      # DuckDB
-pip install "vaults[graph] @ git+https://github.com/borisbachmann/vaults.git"   # Kuzu
+pip install "vaults[kuzu] @ git+https://github.com/borisbachmann/vaults.git"    # Kuzu
 pip install "vaults[polars] @ git+https://github.com/borisbachmann/vaults.git"  # Polars DataFrames
 pip install "vaults[all] @ git+https://github.com/borisbachmann/vaults.git"     # all of the above
 ```
@@ -71,7 +71,7 @@ vault.expand.add_records("Personen", [{"name": "New Person"}])
 
 ## Data contract
 
-The vault must follow a specific folder structure and format. See [docs/contract/contract.MD](docs/contract/contract.MD) for the full specification.
+The vault must follow a specific folder structure and format. See [docs/contract/CONTRACT.md](docs/contract/CONTRACT.md) for the full specification.
 
 ## Code structure
 

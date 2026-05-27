@@ -34,10 +34,38 @@ def _coerce_for_db(value: Any, ft: FieldType) -> Any:
 
 
 class DbAccessor:
+    """
+    Exposes the vault as a DuckDB in-memory database.
+
+    One table is created per type, containing all scalar fields plus the record
+    name as a primary key. Each paired link field (LINK / LIST_LINKS) produces a
+    separate edge table named ``{type}__{field}`` with ``source`` and ``target``
+    columns, allowing SQL joins back to the record tables.
+
+    Accessed via ``vault.db``, which lazily constructs and caches this accessor.
+    """
+
     def __init__(self, vault: "Vault") -> None:
         self._vault = vault
 
     def to_duckdb(self) -> "duckdb.DuckDBPyConnection":
+        """
+        Load the vault into a fresh DuckDB in-memory connection and return it.
+
+        Creates one table per type for scalar fields and one edge table per
+        paired link field. The connection is not cached — each call produces a
+        new independent DuckDB connection reflecting the vault state at call time.
+
+        Returns
+        -------
+        duckdb.DuckDBPyConnection
+            An open in-memory DuckDB connection with all vault tables loaded.
+
+        Raises
+        ------
+        ImportError
+            When the ``duckdb`` package is not installed.
+        """
         import duckdb
 
         con = duckdb.connect()

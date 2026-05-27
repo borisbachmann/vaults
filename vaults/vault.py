@@ -36,15 +36,34 @@ def _compute_fingerprint(data_root: Path) -> str:
 
 
 def coerce_target(observed: set[type]) -> type | None:
-    """Return the least-lossy common Python type for a set of observed types.
+    """
+    Return the least-lossy common Python type for a set of observed value types.
 
-    Rules:
-      {int, float}        → float
-      {bool, int}         → int   (bool ⊂ int in Python)
-      {bool, float}       → float
-      anything with str   → str
-      date + anything     → str   (via isoformat)
-      single type         → None  (no coercion needed)
+    Used when a field contains mixed numeric or date types across records and a
+    single Arrow/pandas dtype must be chosen. Precedence (most to least specific):
+    str > date-mixed-with-other > float > int. bool is a subtype of int in Python,
+    so ``{bool, int}`` resolves to int rather than str.
+
+    Parameters
+    ----------
+    observed : set of type
+        Set of Python types seen across a field's non-null values.
+
+    Returns
+    -------
+    type or None
+        The target type to coerce all values to, or None when all values share
+        a single type (no coercion needed).
+
+    Notes
+    -----
+    Coercion rules:
+      ``{int, float}``   → float
+      ``{bool, int}``    → int  (bool ⊂ int in Python)
+      ``{bool, float}``  → float
+      any set with str   → str
+      date + non-date    → str  (via isoformat to avoid silent truncation)
+      single type        → None
     """
     if len(observed) <= 1:
         return None
@@ -60,10 +79,27 @@ def coerce_target(observed: set[type]) -> type | None:
 
 
 def coerce_value(val: Any, target: type) -> Any:
-    """Convert val to target type; return val unchanged if coercion fails.
+    """
+    Convert a value to the target Python type, returning it unchanged on failure.
 
-    No isinstance short-circuit: bool is a subtype of int in Python, so
-    isinstance(True, int) would prevent coercing bool → int without it.
+    Intentionally avoids an isinstance short-circuit so that bool values are
+    correctly coerced to int (since ``isinstance(True, int)`` is True in Python,
+    a short-circuit would leave booleans as-is when the target is int).
+
+    Parameters
+    ----------
+    val : Any
+        The value to coerce. None is passed through unchanged.
+    target : type
+        The Python type to coerce to. Supported: str, float, int.
+        For str, ``datetime.date`` and ``datetime.datetime`` instances are
+        converted via ``.isoformat()`` rather than ``str()``.
+
+    Returns
+    -------
+    Any
+        The coerced value, or ``val`` unchanged if coercion raises ValueError
+        or TypeError.
     """
     if val is None:
         return val
@@ -97,6 +133,39 @@ def _evaluate_formulas(
     untranslatable_formulas: str,
     frozen_now: datetime,
 ) -> None:
+    """
+    Evaluate all formula fields for every type and write results back to records.
+
+    Formula fields are executed in dependency order (topological sort); cyclic
+    formulas are set to None. Untranslatable formulas (those that failed
+    compilation) are handled per ``untranslatable_formulas``. After evaluation,
+    infers and sets ``output_type`` and ``link_target`` on each FieldSchema.
+
+    Each formula is called with an EvalContext giving it access to the record,
+    the proto-vault, the base file path, and a frozen timestamp so all formulas
+    in a load share the same ``now``.
+
+    Parameters
+    ----------
+    schema : Schema
+        The vault schema whose FORMULA fields are iterated.
+    records : dict[str, list[Record]]
+        Records mutated in-place: formula field values are written to
+        ``rec.fields[formula_field.name]``.
+    proto : Vault
+        An incomplete Vault used as the context for cross-record formula
+        lookups (e.g. ``file.backlinks``).
+    path : Path
+        Vault root, used to construct the base file path per type.
+    bases_folder : str
+        Subdirectory name for ``.base`` files, relative to ``path``.
+    untranslatable_formulas : str
+        ``"drop"`` sets untranslatable formula fields to None for all records;
+        ``"error"`` raises ValueError immediately.
+    frozen_now : datetime
+        Timestamp passed to every EvalContext so that time-sensitive formulas
+        are consistent within a single load.
+    """
     for type_name, type_schema in schema.types.items():
         formula_fields = [f for f in type_schema.fields if f.type == FieldType.FORMULA]
         if not formula_fields:
@@ -142,6 +211,29 @@ def _apply_base_filters(
     bases_folder: str,
     frozen_now: datetime,
 ) -> None:
+    """
+    Filter each type's records using the compiled filter from its ``.base`` file.
+
+    Types without a ``compiled_filter`` are skipped. Records for which the filter
+    raises are kept (fail-open) and a debug log entry is emitted. Dropped records
+    are also logged at debug level.
+
+    Parameters
+    ----------
+    schema : Schema
+        Schema whose types are iterated; only types with ``compiled_filter`` set
+        are processed.
+    records : dict[str, list[Record]]
+        Mutated in-place: each type's list is replaced with the filtered subset.
+    proto : Vault
+        Used as the vault context inside each EvalContext passed to the filter.
+    path : Path
+        Vault root, used to construct the base file path per type.
+    bases_folder : str
+        Subdirectory name for ``.base`` files, relative to ``path``.
+    frozen_now : datetime
+        Timestamp passed to every EvalContext for consistent time comparisons.
+    """
     for type_name, type_schema in schema.types.items():
         if not type_schema.compiled_filter:
             continue
@@ -164,6 +256,32 @@ def _apply_base_filters(
 
 @dataclass
 class Vault:
+    """
+    Central container for a loaded Obsidian vault.
+
+    Holds all parsed records and their schema, and provides lazy-loaded access
+    to DataFrame, graph, database, and expander interfaces. Normally constructed
+    via ``Vault.from_vault()`` rather than directly.
+
+    Parameters
+    ----------
+    schema : Schema
+        Structural description of all types and their field schemas.
+    records : dict[str, list[Record]]
+        Mapping of type name to the list of parsed Record objects for that type.
+    path : Path or None
+        Absolute path to the vault root directory. None for in-memory vaults.
+    relationship_pairs : list of tuple[str, str]
+        Declared bidirectional link pairs, each as ``("TypeA.field", "TypeB.field")``.
+        Used by ``resolve_pairs`` to reconcile both sides of a relationship.
+    violations : list of LintViolation
+        Lint violations detected at load time. Populated automatically by
+        ``from_vault()``; empty for vaults created directly.
+    fingerprint : str
+        SHA-256 hash of all ``.md`` file paths and contents at load time.
+        Used by ``is_stale`` to detect on-disk changes without re-reading files.
+    """
+
     schema: Schema
     records: dict[str, list[Record]] = field(default_factory=dict)
     path: Optional[Path] = None
@@ -210,12 +328,34 @@ class Vault:
 
     @property
     def is_stale(self) -> bool:
+        """
+        Return True if any ``.md`` file in the vault has changed since load.
+
+        Recomputes the SHA-256 fingerprint of the data folder on each call and
+        compares it against the fingerprint captured at load time. Always returns
+        False when ``path`` is None (in-memory vault).
+
+        Returns
+        -------
+        bool
+        """
         if self.path is None:
             return False
         data_root = self.path / self.schema.data_folder
         return _compute_fingerprint(data_root) != self.fingerprint
 
     def reload(self) -> "Vault":
+        """
+        Reload the vault from disk using the same parameters as the original load.
+
+        Replaces ``schema``, ``records``, ``violations``, and ``fingerprint`` in-place
+        and invalidates all accessor caches. Returns ``self`` so the call can be chained.
+
+        Returns
+        -------
+        Vault
+            The same Vault instance, updated to reflect current on-disk state.
+        """
         new = Vault.from_vault(self.path, **self._load_kwargs)
         self.schema = new.schema
         self.records = new.records
@@ -229,6 +369,21 @@ class Vault:
         return self
 
     def lint(self, *, homogeneity_threshold: float = 0.0) -> list[LintViolation]:
+        """
+        Run all linting rules against the vault and return the violations found.
+
+        Parameters
+        ----------
+        homogeneity_threshold : float
+            Passed to the Linter. Fields present in fewer than this fraction of
+            a type's records trigger an R-1 homogeneity violation. Default 0.0
+            disables homogeneity checking.
+
+        Returns
+        -------
+        list of LintViolation
+            All violations detected, across all rule categories.
+        """
         return Linter(self, homogeneity_threshold=homogeneity_threshold).lint()
 
     def _get_backlinks_index(self) -> "dict[str, list[str]]":
@@ -269,6 +424,61 @@ class Vault:
         apply_base_filters: bool = False,
         expand_to_lists: bool = True,
     ) -> "Vault":
+        """
+        Parse a vault directory tree into a fully loaded Vault instance.
+
+        Performs the full load pipeline in order: build schema, parse record
+        frontmatter, evaluate formula fields, optionally apply base filters,
+        run the linter, resolve dangling wikilinks, and reconcile relationship
+        pairs. All load parameters are stored in ``_load_kwargs`` so that
+        ``reload()`` can reproduce the same Vault.
+
+        Parameters
+        ----------
+        path : str or Path
+            Root directory of the vault. Must contain ``data_folder`` and
+            optionally ``bases_folder`` as subdirectories.
+        data_folder : str
+            Name of the subdirectory holding one folder per record type.
+        bases_folder : str
+            Name of the subdirectory holding ``.base`` YAML files.
+        relationship_pairs : list of tuple[str, str] or None
+            Bidirectional link pairs to reconcile, each as
+            ``("TypeA.field", "TypeB.field")``. Pass None or omit to skip
+            pair reconciliation.
+        ignore_empty : bool
+            When True, types with no frontmatter fields are omitted from the
+            schema and records. Useful to skip placeholder folders.
+        dangling_refs : str
+            How to handle wikilinks whose target record does not exist.
+            ``"drop"`` removes them from the field; ``"stub"`` creates a
+            placeholder Record so graph edges are preserved.
+        untranslatable_formulas : str
+            How to handle formula fields that could not be compiled.
+            ``"drop"`` sets them to None for all records; ``"error"`` raises
+            immediately.
+        apply_base_filters : bool
+            When True, records not matching the filter expression from their
+            type's ``.base`` file are excluded after formula evaluation.
+        expand_to_lists : bool
+            When True, a singular LINK field that pair reconciliation would
+            expand to multiple targets is promoted to a list with a warning.
+            When False, that situation raises instead.
+
+        Returns
+        -------
+        Vault
+            A fully loaded Vault with schema, records, violations, and fingerprint
+            populated. Accessor caches (db, dfs, graph, expand) are empty and
+            populated lazily on first access.
+
+        Raises
+        ------
+        ValueError
+            When ``dangling_refs`` or ``untranslatable_formulas`` is not one of
+            the accepted values, or when ``expand_to_lists`` is False and pair
+            reconciliation would produce multiple targets for a singular LINK field.
+        """
         if dangling_refs not in _VALID_DANGLING_REFS:
             raise ValueError(f"dangling_refs must be one of {_VALID_DANGLING_REFS}; got {dangling_refs!r}")
         if untranslatable_formulas not in _VALID_UNTRANSLATABLE:

@@ -68,6 +68,27 @@ def _arrow_type(f: FieldSchema) -> pa.DataType:
 
 
 def _convert_value(value: Any, field_type: FieldType) -> Any:
+    """
+    Normalise a raw field value for Arrow array construction.
+
+    Wikilink strings in LINK and LIST_LINKS/LIST_MIXED fields are reduced to
+    their record-name component so Arrow columns contain plain strings rather
+    than ``[[folder/name]]`` markup.
+
+    Parameters
+    ----------
+    value : Any
+        Raw field value from ``record.fields``.
+    field_type : FieldType
+        The effective field type, used to select the conversion path.
+
+    Returns
+    -------
+    Any
+        For LINK fields: the record name string, or the original string when
+        parsing fails. For list-link fields: a list of record name strings.
+        For all other types: ``value`` unchanged.
+    """
     if value is None:
         return None
     if field_type == FieldType.LINK:
@@ -87,6 +108,27 @@ def _convert_value(value: Any, field_type: FieldType) -> Any:
 
 
 def _parse_order_entry(entry: str, property_display: dict[str, str] | None = None) -> str:
+    """
+    Translate a ``.base`` view order/sort entry to the column name used in the Arrow table.
+
+    Handles Obsidian Bases dot-notation (``file.name``, ``note.field``,
+    ``formula.field``) and display-name aliases from ``property_display``.
+
+    Parameters
+    ----------
+    entry : str
+        A raw order or sort property string from a view config (e.g. ``"note.title"``,
+        ``"formula.revenue"``, ``"file.name"``).
+    property_display : dict[str, str] or None
+        Mapping of property path to display name from the ``.base`` file. When
+        provided, ``entry`` and ``"note.<entry>"`` are checked as keys first.
+
+    Returns
+    -------
+    str
+        The column name as it appears in the Arrow table (i.e. the display name
+        or the stripped field name without its prefix).
+    """
     if entry == "file.name":
         return "_record"
     if property_display:
@@ -102,10 +144,23 @@ def _parse_order_entry(entry: str, property_display: dict[str, str] | None = Non
 
 
 def _flatten_lists_for_csv(tbl: pa.Table) -> pa.Table:
-    """Return a copy of tbl with list-typed columns cast to comma-separated strings.
+    """
+    Return a copy of ``tbl`` with list-typed columns cast to comma-separated strings.
 
-    pyarrow.csv.write_csv does not support list types; this coercion is applied
+    ``pyarrow.csv.write_csv`` does not support list types; this coercion is applied
     only for CSV export and does not touch the cached Arrow table.
+
+    Parameters
+    ----------
+    tbl : pa.Table
+        The Arrow table to transform.
+
+    Returns
+    -------
+    pa.Table
+        A new table where every list-typed column is replaced with a string
+        column of comma-joined values; all other columns are passed through
+        unchanged.
     """
     cols: dict[str, pa.Array] = {}
     for name in tbl.schema.names:
@@ -122,7 +177,26 @@ def _flatten_lists_for_csv(tbl: pa.Table) -> pa.Table:
 
 
 def _full_column_order(type_schema, field_map: dict[str, FieldSchema]) -> list[str]:
-    """Build column order for full-table (no view) access."""
+    """
+    Build the column order for full-table (no view) Arrow output.
+
+    Sorts fields by their type slot (scalars first, then links, then lists,
+    then unknowns) and alphabetically within each slot. ``_record`` is always
+    first; ``full_text`` is always last when present.
+
+    Parameters
+    ----------
+    type_schema : TypeSchema
+        The schema for the type being built (currently unused but kept for
+        future extension).
+    field_map : dict[str, FieldSchema]
+        Mapping of field name to FieldSchema for all fields of the type.
+
+    Returns
+    -------
+    list of str
+        Ordered column names including ``_record`` as the first entry.
+    """
     non_record = [name for name in field_map if name != "full_text"]
 
     def sort_key(name: str) -> tuple:
@@ -139,6 +213,29 @@ def _full_column_order(type_schema, field_map: dict[str, FieldSchema]) -> list[s
 
 
 def _filter_records(vault: "Vault", type_name: str, view_config: dict) -> list:
+    """
+    Apply a view's filter expression to a type's records and return the matching subset.
+
+    Compiles the filter from ``view_config["filters"]`` on each call (not cached).
+    Records for which the filter raises are kept (fail-open) to avoid silent data
+    loss from transient evaluation errors.
+
+    Parameters
+    ----------
+    vault : Vault
+        The vault providing records and path context.
+    type_name : str
+        The type whose records are filtered.
+    view_config : dict
+        A single view dict from the ``.base`` file. The ``"filters"`` key is
+        read; all other keys are ignored.
+
+    Returns
+    -------
+    list of Record
+        The records that pass the filter. Returns all records when ``view_config``
+        has no ``"filters"`` key or when the filter serialises to an empty string.
+    """
     raw = view_config.get("filters")
     if not raw:
         return vault.records.get(type_name, [])
@@ -169,6 +266,40 @@ def _build_arrow_table(
     view_config: Optional[dict] = None,
     coerce_types: bool = False,
 ) -> pa.Table:
+    """
+    Build an Arrow table for a single vault type, with optional view config and type coercion.
+
+    Column selection and order follow the view's ``order`` list when a
+    ``view_config`` is provided, falling back to ``_full_column_order`` for the
+    full-table case. Sorting is applied after array construction using
+    ``pyarrow.compute.sort_indices`` on non-list columns.
+
+    When ``coerce_types=True``, scalar non-link fields with mixed Python types
+    (e.g. int and float) are unified to the least-lossy common type via
+    ``coerce_target`` before the Arrow array is built. Falls back to casting
+    values to strings if Arrow rejects the resulting array.
+
+    Parameters
+    ----------
+    vault : Vault
+        The vault to read records and schema from.
+    type_name : str
+        The type to build the table for. Must be a key in ``vault.schema.types``.
+    view_config : dict or None
+        A single view dict from the ``.base`` file. When None, all records are
+        included with full-table column order and no sorting.
+    coerce_types : bool
+        When True, mixed-type scalar fields are coerced to a common Python type
+        before Arrow array construction.
+
+    Returns
+    -------
+    pa.Table
+        The constructed Arrow table.
+    str or None
+        The group-by column name used for downstream pandas/polars index/sort
+        handling, or None when no ``groupBy`` is defined in the view.
+    """
     type_schema = vault.schema.types[type_name]
     prop_display = type_schema.property_display or None
     recs = (
@@ -263,6 +394,16 @@ def _build_arrow_table(
 # ── Accessor classes ────────────────────────────────────────────────────────
 
 class ViewsAccessor:
+    """
+    Lazy-loading dict-like access to the named views defined in a type's ``.base`` file.
+
+    Views are loaded from disk on first access and cached. Supports ``in``,
+    iteration over view names, ``len``, and ``[]`` lookup (which returns a
+    ``TableAccessor`` scoped to that view's filter and column config).
+
+    Accessed via ``vault.dfs[type_name].views``.
+    """
+
     def __init__(self, vault: "Vault", type_name: str) -> None:
         self._vault = vault
         self._type_name = type_name
@@ -322,6 +463,24 @@ class ViewsAccessor:
 
 
 class TableAccessor:
+    """
+    DataFrame and file export interface for a single vault type or named view.
+
+    Wraps ``_build_arrow_table`` and caches the resulting Arrow table for
+    repeated access. Obtained via ``vault.dfs[type_name]`` (full table) or
+    ``vault.dfs[type_name].views[view_name]`` (view-scoped).
+
+    Parameters
+    ----------
+    _vault : Vault
+        The vault providing records and schema.
+    _type_name : str
+        The type this accessor is bound to.
+    _view_config : dict or None
+        View configuration dict from the ``.base`` file, or None for full-table
+        access.
+    """
+
     def __init__(
         self,
         _vault: "Vault",
@@ -336,6 +495,24 @@ class TableAccessor:
         self._views_cache: Optional[ViewsAccessor] = None
 
     def to_arrow(self, *, coerce_types: bool = False) -> pa.Table:
+        """
+        Return the type's records as a PyArrow Table.
+
+        The result is cached when ``coerce_types=False``; each call with
+        ``coerce_types=True`` rebuilds the table without caching.
+
+        Parameters
+        ----------
+        coerce_types : bool
+            When True, scalar fields with mixed Python types across records are
+            unified to the least-lossy common type before Arrow array construction.
+
+        Returns
+        -------
+        pa.Table
+            Arrow table with a ``_record`` string column as the first column,
+            followed by all other fields in schema-defined order.
+        """
         if not coerce_types and self._arrow_cache is not None:
             return self._arrow_cache
         tbl, self._group_col = _build_arrow_table(
@@ -346,11 +523,33 @@ class TableAccessor:
         return tbl
 
     def to_pandas(self, *, coerce_types: bool = False):
+        """
+        Return the type's records as a pandas DataFrame.
+
+        When a ``groupBy`` is defined in the view config, the group column and
+        ``_record`` are set as a MultiIndex (or the DataFrame is sorted by the
+        group column when it is a list type, which Arrow cannot use as an index).
+        Integer columns use ``pd.Int64Dtype()`` to preserve nullable integers.
+
+        Parameters
+        ----------
+        coerce_types : bool
+            Forwarded to ``to_arrow()``.
+
+        Returns
+        -------
+        pandas.DataFrame
+
+        Raises
+        ------
+        ImportError
+            When pandas is not installed.
+        """
         try:
             import pandas as pd
         except ImportError as e:
             raise ImportError(
-                "to_pandas() requires pandas. Install with: pip install vaults[pandas]"
+                "to_pandas() requires pandas. Install with: pip install pandas"
             ) from e
         tbl = self.to_arrow(coerce_types=coerce_types)
         group_col = self._group_col
@@ -368,6 +567,26 @@ class TableAccessor:
         return df
 
     def to_polars(self, *, coerce_types: bool = False):
+        """
+        Return the type's records as a Polars DataFrame.
+
+        When a ``groupBy`` is defined in the view config, the group column is
+        moved to the front and the DataFrame is sorted by it (nulls last).
+
+        Parameters
+        ----------
+        coerce_types : bool
+            Forwarded to ``to_arrow()``.
+
+        Returns
+        -------
+        polars.DataFrame
+
+        Raises
+        ------
+        ImportError
+            When polars is not installed.
+        """
         try:
             import polars as pl
         except ImportError as e:
@@ -385,10 +604,23 @@ class TableAccessor:
         return df
 
     def to_parquet(self, path: str | Path, *, coerce_types: bool = False) -> Path:
-        """Write this table to a Parquet file and return the path.
+        """
+        Write this table to a Parquet file and return the path.
 
-        Uses the same Arrow table produced by ``to_arrow()``, so all field
-        types are preserved exactly — including lists and dates.
+        Uses the Arrow table from ``to_arrow()``, preserving all field types
+        exactly — including lists and dates.
+
+        Parameters
+        ----------
+        path : str or Path
+            Destination file path. Parent directory must exist.
+        coerce_types : bool
+            Forwarded to ``to_arrow()``.
+
+        Returns
+        -------
+        Path
+            The resolved path to the written file.
         """
         import pyarrow.parquet as pq
         tbl = self.to_arrow(coerce_types=coerce_types)
@@ -397,10 +629,23 @@ class TableAccessor:
         return path
 
     def to_csv(self, path: str | Path, *, coerce_types: bool = False) -> Path:
-        """Write this table to a CSV file and return the path.
+        """
+        Write this table to a CSV file and return the path.
 
-        List-typed columns are flattened to comma-separated strings because
-        the CSV format does not support arrays.
+        List-typed columns are flattened to comma-separated strings before
+        writing because the CSV format does not support arrays.
+
+        Parameters
+        ----------
+        path : str or Path
+            Destination file path. Parent directory must exist.
+        coerce_types : bool
+            Forwarded to ``to_arrow()``.
+
+        Returns
+        -------
+        Path
+            The resolved path to the written file.
         """
         import pyarrow.csv as pa_csv
         tbl = self.to_arrow(coerce_types=coerce_types)
@@ -411,6 +656,15 @@ class TableAccessor:
 
     @property
     def views(self) -> ViewsAccessor:
+        """
+        The named views defined for this type in its ``.base`` file.
+
+        Returns
+        -------
+        ViewsAccessor
+            A lazy-loaded dict-like object keyed by view name. Use
+            ``table.views["My View"].to_pandas()`` to access a specific view.
+        """
         if self._views_cache is None:
             self._views_cache = ViewsAccessor(self._vault, self._type_name)
         return self._views_cache
@@ -425,6 +679,15 @@ class TableAccessor:
 
 
 class DfsAccessor:
+    """
+    Dict-like access to all vault types as ``TableAccessor`` objects.
+
+    Iterating, ``in`` checks, and ``len`` operate over type names. Index with
+    a type name to get a ``TableAccessor`` for that type.
+
+    Accessed via ``vault.dfs``, which lazily constructs and caches this accessor.
+    """
+
     def __init__(self, vault: "Vault") -> None:
         self._vault = vault
 
@@ -446,13 +709,38 @@ class DfsAccessor:
         return len(self._vault.schema.types)
 
     def to_arrow(self, *, coerce_types: bool = False) -> dict[str, pa.Table]:
-        """Return all types as a ``{type_name: pa.Table}`` dict."""
+        """
+        Return all types as a dict of Arrow tables.
+
+        Parameters
+        ----------
+        coerce_types : bool
+            Forwarded to each ``TableAccessor.to_arrow()`` call.
+
+        Returns
+        -------
+        dict[str, pa.Table]
+            Mapping of type name to its Arrow table.
+        """
         return {t: self[t].to_arrow(coerce_types=coerce_types) for t in self._vault.schema.types}
 
     def to_parquet(self, directory: str | Path, *, coerce_types: bool = False) -> dict[str, Path]:
-        """Write all types as ``{type_name}.parquet`` files into *directory* and return a path dict.
+        """
+        Write all types as Parquet files into a directory and return a path dict.
 
-        Creates the directory if it does not exist.
+        Creates the directory (and any missing parents) if it does not exist.
+
+        Parameters
+        ----------
+        directory : str or Path
+            Target directory. Each type is written as ``{type_name}.parquet``.
+        coerce_types : bool
+            Forwarded to each ``TableAccessor.to_arrow()`` call.
+
+        Returns
+        -------
+        dict[str, Path]
+            Mapping of type name to the path of the written Parquet file.
         """
         import pyarrow.parquet as pq
         directory = Path(directory)

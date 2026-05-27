@@ -119,6 +119,24 @@ def _flatten_graph_attrs(G: "nx.DiGraph") -> "nx.DiGraph":
 
 
 def _build_digraph(vault: "Vault") -> "nx.DiGraph":
+    """
+    Build a directed NetworkX graph from all vault records and their link fields.
+
+    Each record becomes a node with id ``"{record_name}|{type_name}"``. Scalar
+    field values are stored as node attributes; link fields are omitted from node
+    attrs and instead become directed edges. Each edge carries ``field_name``,
+    ``source_type``, and ``target_type`` attributes.
+
+    Parameters
+    ----------
+    vault : Vault
+        The vault to build the graph from.
+
+    Returns
+    -------
+    nx.DiGraph
+        A directed graph with one node per record and one edge per link target.
+    """
     import networkx as nx
 
     G = nx.DiGraph()
@@ -155,6 +173,16 @@ def _build_digraph(vault: "Vault") -> "nx.DiGraph":
 
 
 class GraphAccessor:
+    """
+    Exports the vault as a property graph in multiple formats.
+
+    Supports NetworkX (in-memory), Kuzu (Cypher / property graph DB), RDF
+    (Turtle, N-Triples, etc. via RDFLib), GraphML, and GEXF. The underlying
+    directed graph is built once and cached; all export methods derive from it.
+
+    Accessed via ``vault.graph``, which lazily constructs and caches this accessor.
+    """
+
     def __init__(self, vault: "Vault") -> None:
         self._vault = vault
         self._digraph_cache: Optional["nx.DiGraph"] = None
@@ -168,17 +196,25 @@ class GraphAccessor:
 
     @property
     def kuzu_names(self) -> dict[str, dict[str, dict[str, str]]]:
-        """Kuzu name mapping per type, split into ``properties`` and ``relationships``.
+        """
+        Kuzu name mapping per type, split into ``properties`` and ``relationships``.
 
-        ``properties`` maps original scalar field names to their Kuzu node
-        property names (used in ``RETURN n.X``).
+        Use this to translate original field names to Kuzu identifiers when
+        writing Cypher queries against the graph returned by ``to_kuzu()``.
 
-        ``relationships`` maps original link field names to their Kuzu
-        relationship table names (used in ``MATCH ()-[:X]->()``) .
+        Returns
+        -------
+        dict[str, dict[str, dict[str, str]]]
+            Nested dict keyed by type name. Each value has two sub-dicts:
 
-        Short relationship table names are used by default; the
-        ``{Type}__{field}`` prefix is added only when two fields in the vault
-        would otherwise collide on the same normalized name.
+            ``properties`` : dict[str, str]
+                Maps original scalar field name → Kuzu node property name
+                (used in ``RETURN n.X``).
+            ``relationships`` : dict[str, str]
+                Maps original link field name → Kuzu relationship table name
+                (used in ``MATCH ()-[:X]->()``). Short names are used by
+                default; ``{Type}__{field}`` prefix is added only when two
+                fields would otherwise collide on the same normalised name.
         """
         rel_names = _build_rel_names(self._vault)
         result: dict[str, dict[str, dict[str, str]]] = {}
@@ -196,15 +232,22 @@ class GraphAccessor:
 
     @property
     def rdf_names(self) -> dict[str, dict[str, dict[str, str]]]:
-        """RDF name mapping per type, split into ``properties`` and ``relationships``.
+        """
+        RDF name mapping per type, split into ``properties`` and ``relationships``.
 
-        ``properties`` maps original scalar field names to the URI local name
-        used in ``<{base_uri}ontology/{local_name}>``.
+        Use this to translate original field names to URI local names when
+        writing SPARQL queries against the graph returned by ``to_rdf()``.
 
-        ``relationships`` maps original link field names to their URI local name.
+        Returns
+        -------
+        dict[str, dict[str, dict[str, str]]]
+            Nested dict keyed by type name. Each value has two sub-dicts:
 
-        Use these when writing SPARQL queries against the graph returned by
-        ``to_rdf()``.
+            ``properties`` : dict[str, str]
+                Maps original scalar field name → URI local name used in
+                ``<{base_uri}ontology/{local_name}>``.
+            ``relationships`` : dict[str, str]
+                Maps original link field name → URI local name.
         """
         result: dict[str, dict[str, dict[str, str]]] = {}
         for type_name, type_schema in self._vault.schema.types.items():
@@ -222,16 +265,23 @@ class GraphAccessor:
     # ── NetworkX ──────────────────────────────────────────────────────────────
 
     def to_networkx(self, directed: bool = True) -> "nx.DiGraph | nx.Graph":
-        """Return the vault as a NetworkX graph.
+        """
+        Return the vault as a NetworkX graph.
 
-        ``directed=True`` (default) returns a ``DiGraph`` where edges follow
-        declared link directions.  ``directed=False`` returns an undirected
-        ``Graph`` useful for reachability and path queries that should ignore
-        direction — explicitly trading away edge semantics for traversal freedom.
+        Parameters
+        ----------
+        directed : bool
+            When True (default), returns a ``DiGraph`` where edges follow
+            declared link directions. When False, returns an undirected ``Graph``
+            useful for reachability and path queries that ignore direction —
+            trading away edge semantics for traversal freedom.
 
-        Nodes carry ``type`` plus all scalar field values as attributes.
-        Edges carry ``field_name``, ``source_type``, and ``target_type``.
-        Node identity is ``filename|type``.
+        Returns
+        -------
+        nx.DiGraph or nx.Graph
+            Nodes carry ``type`` plus all scalar field values as attributes.
+            Edges carry ``field_name``, ``source_type``, and ``target_type``.
+            Node identity is ``"{record_name}|{type_name}"``.
         """
         G = self._digraph()
         return G if directed else G.to_undirected()
@@ -239,19 +289,34 @@ class GraphAccessor:
     # ── Kuzu ─────────────────────────────────────────────────────────────────
 
     def to_kuzu(self, path: Optional[str | Path] = None):
-        """Return a live Kuzu connection with the vault loaded as a property graph.
+        """
+        Load the vault into a Kuzu property graph database and return a live connection.
 
-        One node table per type; one relationship table per link field, named
-        ``{SourceType}__{field_name}``.  Pass ``path`` to persist the database;
-        omit for an in-memory database.
+        Creates one node table per type and one relationship table per link
+        field. Relationship table names follow the same collision-avoidance
+        scheme described in ``kuzu_names``.
 
-        Raises ``ImportError`` if Kuzu is not installed.
+        Parameters
+        ----------
+        path : str, Path, or None
+            Filesystem path to persist the Kuzu database. When None, an
+            in-memory database is used.
+
+        Returns
+        -------
+        kuzu.Connection
+            An open connection to the populated Kuzu database.
+
+        Raises
+        ------
+        ImportError
+            When the ``kuzu`` package is not installed.
         """
         try:
             import kuzu
         except ImportError as e:
             raise ImportError(
-                "Kuzu is required for `.graph.to_kuzu()`. Install it with `pip install kuzu`."
+                "Kuzu is required for `.graph.to_kuzu()`. Install with: pip install vaults[kuzu]"
             ) from e
 
         db = kuzu.Database(str(path)) if path else kuzu.Database()
@@ -316,19 +381,38 @@ class GraphAccessor:
         base_uri: str = "http://vault/",
         format: str = "turtle",
     ):
-        """Return an RDFLib Graph with the vault mapped to RDF triples.
+        """
+        Map the vault to RDF triples and return an RDFLib Graph.
 
-        Mapping:
+        OWL mapping:
+
         - Records → named individuals at ``{base_uri}{Type}/{filename}``
         - Types → OWL classes at ``{base_uri}ontology/{TypeName}``
         - Scalar fields → OWL datatype properties
         - Link fields → OWL object properties
         - Declared pairs → ``owl:inverseOf`` assertions
 
-        Pass ``path`` to serialise to disk (default format: Turtle).
-        The RDFLib Graph is always returned regardless of ``path``.
+        Parameters
+        ----------
+        path : str, Path, or None
+            When provided, the graph is serialised to this file path using
+            ``format``. The RDFLib Graph is always returned regardless.
+        base_uri : str
+            Base URI for all generated resource and ontology URIs. A trailing
+            slash is appended automatically if absent.
+        format : str
+            RDFLib serialisation format (e.g. ``"turtle"``, ``"n3"``,
+            ``"nt"``). Only used when ``path`` is provided.
 
-        Raises ``ImportError`` if RDFLib is not installed.
+        Returns
+        -------
+        rdflib.Graph
+            The fully populated RDF graph.
+
+        Raises
+        ------
+        ImportError
+            When the ``rdflib`` package is not installed.
         """
         try:
             from rdflib import Graph, Literal, Namespace, URIRef
@@ -416,13 +500,24 @@ class GraphAccessor:
     # ── GraphML / GEXF export ─────────────────────────────────────────────────
 
     def to_graphml(self, path: str | Path, directed: bool = True) -> Path:
-        """Write the vault graph to a GraphML file and return the path.
+        """
+        Write the vault graph to a GraphML file and return the path.
 
         GraphML is an XML-based format readable by Gephi, yEd, and other tools.
         List-typed field values are joined to comma-separated strings because
         GraphML does not support array attributes.
 
-        ``directed=False`` converts to an undirected graph before export.
+        Parameters
+        ----------
+        path : str or Path
+            Destination file path.
+        directed : bool
+            When False, the graph is converted to undirected before export.
+
+        Returns
+        -------
+        Path
+            The resolved path to the written file.
         """
         import networkx as nx
 
@@ -433,13 +528,24 @@ class GraphAccessor:
         return path
 
     def to_gephi(self, path: str | Path, directed: bool = True) -> Path:
-        """Write the vault graph to a GEXF file (Gephi's native format) and return the path.
+        """
+        Write the vault graph to a GEXF file (Gephi's native format) and return the path.
 
         GEXF (Graph Exchange XML Format) is the native import format for Gephi.
         List-typed field values are joined to comma-separated strings because
         GEXF does not support array attributes.
 
-        ``directed=False`` converts to an undirected graph before export.
+        Parameters
+        ----------
+        path : str or Path
+            Destination file path.
+        directed : bool
+            When False, the graph is converted to undirected before export.
+
+        Returns
+        -------
+        Path
+            The resolved path to the written file.
         """
         import networkx as nx
 
