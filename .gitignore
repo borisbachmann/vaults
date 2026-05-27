@@ -1,10 +1,15 @@
-.venv/
-data/
-archive/
+# python
 __pycache__/
 *.pyc
+
+# filesystem
+.DS_Store
+
+# local
+.venv/
+.claude/settings.local.json
+data/
+archive/
+open-here.app/
 *.ipynb
 .ipynb_checkpoints/
-.DS_Store
-.claude/settings.local.json
-open-here.app/

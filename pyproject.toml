@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Data analytics on human-curated structured and relational data in Markdown format, built around Obsidian."
 license = "MIT"
 readme = "README.md"
+authors = [{name = "Boris Bachmann"}]
 requires-python = ">=3.11"
 dependencies = [
     "python-frontmatter",
@@ -19,6 +20,9 @@ dependencies = [
     "rdflib",
     "pandas",
 ]
+
+[project.urls]
+Repository = "https://github.com/borisbachmann/vaults"
 
 [project.optional-dependencies]
 polars = ["polars"]
