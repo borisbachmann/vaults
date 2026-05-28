@@ -77,6 +77,14 @@ The vault must follow a specific folder structure and format. See [docs/contract
 
 See [docs/code-map.md](docs/code-map.md) for a detailed module breakdown, data flows, and cross-module dependencies.
 
+## Acknowledgments
+
+Built on top of [Obsidian](https://obsidian.md) and its `.base` file format.
+
+Key dependencies that make this package possible: [Lark](https://github.com/lark-parser/lark) (parsing), [Apache Arrow](https://arrow.apache.org), [NetworkX](https://networkx.org), and [RDFLib](https://rdflib.readthedocs.io).
+
+This codebase was developed with assistance from [Claude](https://claude.ai) (Anthropic) in a closely human-reviewed mode. The Lark grammar for Obsidian bases in particular would have been significantly harder without AI assistance. All design decisions are mine.
+
 ## License
 
 [MIT](LICENSE)
