@@ -670,11 +670,13 @@ class TableAccessor:
         return self._views_cache
 
     def __repr__(self) -> str:
-        recs = len(self._vault.records.get(self._type_name, []))
         views_n = len(self.views)
         view_part = f", {views_n} view{'s' if views_n != 1 else ''}" if views_n else ""
         if self._view_config:
-            return f"TableAccessor({self._type_name!r}, view={self._view_config.get('name')!r}, {recs} records)"
+            filtered = len(_filter_records(self._vault, self._type_name, self._view_config))
+            total = len(self._vault.records.get(self._type_name, []))
+            return f"TableAccessor({self._type_name!r}, view={self._view_config.get('name')!r}, {filtered}/{total} records)"
+        recs = len(self._vault.records.get(self._type_name, []))
         return f"TableAccessor({self._type_name!r}, {recs} records{view_part})"
 
 

@@ -29,7 +29,7 @@ class _FileProxy:
 
     @property
     def name(self) -> str | None:
-        return self._path.name if self._path else None
+        return self._path.stem if self._path else None
 
     @property
     def basename(self) -> str | None:
