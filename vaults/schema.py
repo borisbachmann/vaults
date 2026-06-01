@@ -211,9 +211,10 @@ def serialize_filter(filters: Any) -> Optional[str]:
         return None
     if isinstance(filters, str):
         return filters
+    _OP_TOKEN = {"and": "&&", "or": "||"}
     if isinstance(filters, list):
         parts = [str(e) for e in filters if e]
-        return " and ".join(parts) if parts else None
+        return " && ".join(parts) if parts else None
     if isinstance(filters, dict):
         for op in ("and", "or"):
             if op in filters:
@@ -222,7 +223,8 @@ def serialize_filter(filters: Any) -> Optional[str]:
                     parts = [str(e) for e in items if e]
                     if len(parts) == 1:
                         return parts[0]
-                    return f" {op} ".join(parts)
+                    tok = _OP_TOKEN[op]
+                    return f" {tok} ".join(parts)
                 return str(items)
     return None
 
