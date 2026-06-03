@@ -130,15 +130,15 @@ def iter_link_names(value: Any) -> list[str]:
     if value is None:
         return []
     if isinstance(value, str):
-        parsed = parse_wikilink(value)
-        return [parsed[1]] if parsed else []
+        name = parse_wikilink_name(value)
+        return [name] if name else []
     if isinstance(value, list):
         result = []
         for item in value:
             if isinstance(item, str):
-                parsed = parse_wikilink(item)
-                if parsed:
-                    result.append(parsed[1])
+                name = parse_wikilink_name(item)
+                if name:
+                    result.append(name)
         return result
     return []
 
