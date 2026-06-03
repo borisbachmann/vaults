@@ -28,6 +28,22 @@ class FieldType(str, Enum):
     INTEGER = "integer"
 
 
+FIELD_TYPE_EMPTY_DEFAULTS: dict["FieldType", Any] = {
+    FieldType.STRING: None,
+    FieldType.NUMBER: None,
+    FieldType.INTEGER: None,
+    FieldType.BOOLEAN: None,
+    FieldType.DATE: None,
+    FieldType.DATETIME: None,
+    FieldType.LINK: None,
+    FieldType.LIST_STRINGS: [],
+    FieldType.LIST_LINKS: [],
+    FieldType.LIST_MIXED: [],
+    FieldType.UNKNOWN: None,
+    FieldType.FORMULA: None,
+}
+
+
 def infer_field_type(values: list) -> FieldType:
     """
     Infer the most specific FieldType consistent with all observed values.

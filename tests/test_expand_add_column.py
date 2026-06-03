@@ -154,6 +154,40 @@ def test_on_missing_skip(tmp_vault, tmp_path):
     assert "color:" not in (tmp_path / "data" / "Items" / "Gamma.md").read_text()
 
 
+def test_on_missing_default_scalar_writes_bare_key(tmp_vault, tmp_path):
+    """Missing records receive a bare YAML key (None) for scalar types."""
+    col = {"Alpha": "red", "Beta": "blue"}  # Gamma missing
+    results = tmp_vault.expand.add_column(
+        "Items", col, property_name="color", on_missing="default"
+    )
+    assert all(r.status in ("processed",) for r in results)
+    gamma_content = (tmp_path / "data" / "Items" / "Gamma.md").read_text()
+    assert "color:" in gamma_content
+    assert "null" not in gamma_content.lower()
+
+
+def test_on_missing_default_list_writes_empty_list(tmp_vault, tmp_path):
+    """Missing records receive an empty list for list-typed columns."""
+    col = {"Alpha": ["x", "y"], "Beta": ["z"]}  # Gamma missing
+    results = tmp_vault.expand.add_column(
+        "Items", col, property_name="tags", on_missing="default"
+    )
+    assert all(r.status in ("processed",) for r in results)
+    gamma_content = (tmp_path / "data" / "Items" / "Gamma.md").read_text()
+    assert "tags: []" in gamma_content
+
+
+def test_on_missing_default_all_missing_uses_unknown_default(tmp_vault, tmp_path):
+    """When the entire column is missing records, inferred type is UNKNOWN → None."""
+    results = tmp_vault.expand.add_column(
+        "Items", {}, property_name="new_prop", on_missing="default"
+    )
+    assert all(r.status == "processed" for r in results)
+    for name in ("Alpha", "Beta", "Gamma"):
+        content = (tmp_path / "data" / "Items" / f"{name}.md").read_text()
+        assert "new_prop:" in content
+
+
 # ── Guard conditions ───────────────────────────────────────────────────────────
 
 def test_stale_vault_raises(tmp_vault, tmp_path):

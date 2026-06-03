@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from ..schema import FIELD_TYPE_EMPTY_DEFAULTS, infer_field_type
 from .adapters import _normalize_null, _to_column, _to_records
 from .io import (
     _check_stale,
@@ -435,7 +436,7 @@ class Expander:
         *,
         property_name: str,
         on_existing: Literal["error", "skip", "overwrite"] = "error",
-        on_missing: Literal["error", "skip"] = "error",
+        on_missing: Literal["error", "skip", "default"] = "error",
     ) -> list[EntryResult]:
         """
         Write a new frontmatter property to all records of an existing type.
@@ -455,8 +456,11 @@ class Expander:
             The frontmatter key to insert or update on each record.
         on_existing : {"error", "skip", "overwrite"}
             How to handle records where ``property_name`` already exists.
-        on_missing : {"error", "skip"}
+        on_missing : {"error", "skip", "default"}
             How to handle records not covered by the ``column`` mapping.
+            ``"default"`` writes the type-appropriate empty value: ``[]`` for
+            list fields, ``None`` (bare YAML key) for all other types. The type
+            is inferred from the values present in ``column``.
 
         Returns
         -------
@@ -494,9 +498,14 @@ class Expander:
         if missing and on_missing == "error":
             raise ValueError(
                 f"add_column[{type_name!r}]: {len(missing)} record(s) not covered by column mapping. "
-                f"Pass on_missing='skip' to leave them unchanged.\n"
+                f"Pass on_missing='skip' or 'default' to handle them.\n"
                 f"Unmatched filenames: {', '.join(missing)}"
             )
+
+        if on_missing == "default":
+            inferred_type = infer_field_type(list(col_dict.values()))
+            missing_default = FIELD_TYPE_EMPTY_DEFAULTS[inferred_type]
+
         if existing and on_existing == "error":
             raise ValueError(
                 f"add_column[{type_name!r}]: property {property_name!r} already exists on "
@@ -510,16 +519,23 @@ class Expander:
             result = EntryResult(filename=rec.name, status="processed")
 
             if rec.name not in col_dict:
-                result.status = "skipped"
-                result.warning_types.append("skipped_missing")
-                logger.warning(
-                    "add_column[%s]: %r skipped — not in column mapping",
-                    type_name, rec.name,
-                )
-                results.append(result)
-                continue
-
-            value = _normalize_null(col_dict[rec.name])
+                if on_missing == "default":
+                    value = missing_default
+                    logger.debug(
+                        "add_column[%s]: %r not in column mapping — using default %r",
+                        type_name, rec.name, value,
+                    )
+                else:  # skip (error already raised above)
+                    result.status = "skipped"
+                    result.warning_types.append("skipped_missing")
+                    logger.warning(
+                        "add_column[%s]: %r skipped — not in column mapping",
+                        type_name, rec.name,
+                    )
+                    results.append(result)
+                    continue
+            else:
+                value = _normalize_null(col_dict[rec.name])
 
             if property_name in rec.fields:
                 if on_existing == "skip":
