@@ -21,6 +21,8 @@ class FieldType(str, Enum):
     DATETIME = "datetime"
     LINK = "link"
     LIST_STRINGS = "list[string]"
+    LIST_INTEGERS = "list[integer]"
+    LIST_NUMBERS = "list[number]"
     LIST_LINKS = "list[link]"
     LIST_MIXED = "list[mixed]"
     UNKNOWN = "unknown"
@@ -37,6 +39,8 @@ FIELD_TYPE_EMPTY_DEFAULTS: dict["FieldType", Any] = {
     FieldType.DATETIME: None,
     FieldType.LINK: None,
     FieldType.LIST_STRINGS: [],
+    FieldType.LIST_INTEGERS: [],
+    FieldType.LIST_NUMBERS: [],
     FieldType.LIST_LINKS: [],
     FieldType.LIST_MIXED: [],
     FieldType.UNKNOWN: None,
@@ -88,6 +92,10 @@ def infer_field_type(values: list) -> FieldType:
             return FieldType.LIST_LINKS
         if any(is_wikilink(str(item)) for item in flat):
             return FieldType.LIST_MIXED
+        if all(isinstance(item, int) and not isinstance(item, bool) for item in flat):
+            return FieldType.LIST_INTEGERS
+        if all(isinstance(item, (int, float)) and not isinstance(item, bool) for item in flat):
+            return FieldType.LIST_NUMBERS
         return FieldType.LIST_STRINGS
     if all(isinstance(v, str) for v in non_null):
         if all(is_wikilink(v) for v in non_null):

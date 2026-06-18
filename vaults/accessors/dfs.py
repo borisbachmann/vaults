@@ -9,7 +9,7 @@ import pyarrow as pa
 import yaml
 
 from ..syntax import BasesCompiler, EvalContext
-from ..schema import FieldSchema, FieldType, serialize_filter
+from ..schema import FIELD_TYPE_EMPTY_DEFAULTS, FieldSchema, FieldType, serialize_filter
 from ..links import LIST_LINK_TYPES, parse_wikilink_name
 from ..vault import coerce_target, coerce_value
 
@@ -29,9 +29,11 @@ _FIELD_TO_ARROW: dict[FieldType, pa.DataType] = {
     FieldType.BOOLEAN:      pa.bool_(),
     FieldType.DATE:         pa.date32(),
     FieldType.DATETIME:     pa.timestamp("us"),
-    FieldType.LIST_STRINGS: pa.list_(pa.string()),
-    FieldType.LIST_LINKS:   pa.list_(pa.string()),
-    FieldType.LIST_MIXED:   pa.list_(pa.string()),
+    FieldType.LIST_STRINGS:  pa.list_(pa.string()),
+    FieldType.LIST_INTEGERS: pa.list_(pa.int64()),
+    FieldType.LIST_NUMBERS:  pa.list_(pa.float64()),
+    FieldType.LIST_LINKS:    pa.list_(pa.string()),
+    FieldType.LIST_MIXED:    pa.list_(pa.string()),
     FieldType.LINK:         pa.string(),
     FieldType.UNKNOWN:      pa.string(),
     FieldType.FORMULA:      pa.string(),  # fallback; overridden via output_type
@@ -54,7 +56,9 @@ _TYPE_SLOT: dict[FieldType, int] = {
     FieldType.NUMBER:       3,
     FieldType.DATE:         4,
     FieldType.DATETIME:     4,
-    FieldType.LIST_STRINGS: 5,
+    FieldType.LIST_STRINGS:  5,
+    FieldType.LIST_INTEGERS: 5,
+    FieldType.LIST_NUMBERS:  5,
     FieldType.LINK:         6,
     FieldType.LIST_LINKS:   7,
     FieldType.LIST_MIXED:   7,
@@ -90,7 +94,7 @@ def _convert_value(value: Any, field_type: FieldType) -> Any:
         For all other types: ``value`` unchanged.
     """
     if value is None:
-        return None
+        return FIELD_TYPE_EMPTY_DEFAULTS.get(field_type)
     if field_type == FieldType.LINK:
         name = parse_wikilink_name(str(value))
         return name if name is not None else str(value)

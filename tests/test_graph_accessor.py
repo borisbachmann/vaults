@@ -171,7 +171,7 @@ def test_kuzu_node_tables_created(kuzu_conn):
 
 def test_kuzu_records_loaded(kuzu_conn):
     res = kuzu_conn.execute("MATCH (n:Projekte) RETURN n.record").get_as_df()
-    assert set(res["n.record"]) == {"Alpha", "Beta"}
+    assert set(res["n.record"]) == {"Alpha", "Beta", "Gamma"}
 
 
 def test_kuzu_scalar_field_value(kuzu_conn):

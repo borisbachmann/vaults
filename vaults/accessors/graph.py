@@ -19,8 +19,10 @@ _FIELD_TO_KUZU: dict[FieldType, str] = {
     FieldType.BOOLEAN:      "BOOL",
     FieldType.DATE:         "DATE",
     FieldType.DATETIME:     "TIMESTAMP",
-    FieldType.LIST_STRINGS: "STRING[]",
-    FieldType.LIST_MIXED:   "STRING[]",
+    FieldType.LIST_STRINGS:  "STRING[]",
+    FieldType.LIST_INTEGERS: "INT64[]",
+    FieldType.LIST_NUMBERS:  "DOUBLE[]",
+    FieldType.LIST_MIXED:    "STRING[]",
     FieldType.UNKNOWN:      "STRING",
 }
 
@@ -484,6 +486,16 @@ class GraphAccessor:
                         items = val if isinstance(val, list) else [val]
                         for item in items:
                             g.add((ind_uri, prop_uri, Literal(str(item), datatype=XSD.string)))
+
+                    elif eff == FieldType.LIST_INTEGERS:
+                        items = val if isinstance(val, list) else [val]
+                        for item in items:
+                            g.add((ind_uri, prop_uri, Literal(item, datatype=XSD.integer)))
+
+                    elif eff == FieldType.LIST_NUMBERS:
+                        items = val if isinstance(val, list) else [val]
+                        for item in items:
+                            g.add((ind_uri, prop_uri, Literal(item, datatype=XSD.double)))
 
                     else:
                         xsd_type = _XSD_MAP.get(eff)

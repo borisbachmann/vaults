@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from ..schema import FieldType
+from ..schema import FIELD_TYPE_EMPTY_DEFAULTS, FieldType
 from ..links import LINK_TYPES_PAIRED, iter_link_names
 
 if TYPE_CHECKING:
@@ -18,6 +18,8 @@ _FIELD_TO_DB_TYPE: dict[FieldType, str] = {
     FieldType.DATE: "DATE",
     FieldType.DATETIME: "TIMESTAMP",
     FieldType.LIST_STRINGS: "VARCHAR[]",
+    FieldType.LIST_INTEGERS: "BIGINT[]",
+    FieldType.LIST_NUMBERS: "DOUBLE[]",
     FieldType.LIST_MIXED: "VARCHAR[]",
     FieldType.UNKNOWN: "VARCHAR",
 }
@@ -25,7 +27,7 @@ _FIELD_TO_DB_TYPE: dict[FieldType, str] = {
 
 def _coerce_for_db(value: Any, ft: FieldType) -> Any:
     if value is None:
-        return None
+        return FIELD_TYPE_EMPTY_DEFAULTS.get(ft)
     if ft == FieldType.LIST_MIXED:
         return [str(item) if item is not None else "" for item in value] if isinstance(value, list) else [str(value)]
     if ft == FieldType.UNKNOWN:

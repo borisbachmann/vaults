@@ -62,6 +62,14 @@ def test_list_links():
     assert infer_field_type(values) == FieldType.LIST_LINKS
 
 
+def test_list_integers():
+    assert infer_field_type([[1, 2], [3]]) == FieldType.LIST_INTEGERS
+
+
+def test_list_numbers():
+    assert infer_field_type([[1.0, 2.5], [3]]) == FieldType.LIST_NUMBERS
+
+
 def test_list_strings():
     assert infer_field_type([["Zivilgesellschaft"], ["Wirtschaft", "Politik"]]) == FieldType.LIST_STRINGS
 

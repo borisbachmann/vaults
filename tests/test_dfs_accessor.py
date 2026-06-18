@@ -60,7 +60,7 @@ def test_full_text_column_last(vault):
 
 def test_record_count(vault):
     tbl = vault.dfs["Projekte"].to_arrow()
-    assert tbl.num_rows == 2
+    assert tbl.num_rows == 3
 
 
 def test_string_column_type(vault):
@@ -131,6 +131,17 @@ def test_list_links_as_filename_list(vault):
     assert all("[[" not in item and "/" not in item for item in flat)
 
 
+# ── None → empty list for list-typed fields ────────────────────────────────
+
+def test_none_list_field_coerced_to_empty_list(vault):
+    """A bare YAML key (None) in a list-typed field becomes [] in Arrow."""
+    tbl = vault.dfs["Projekte"].to_arrow()
+    names = tbl.column("_record").to_pylist()
+    idx = names.index("Gamma")
+    assert tbl.column("Traeger")[idx].as_py() == []
+    assert tbl.column("Staedte")[idx].as_py() == []
+
+
 # ── Missing fields → null ───────────────────────────────────────────────────
 
 def test_stub_record_has_null_fields(vault):
@@ -157,14 +168,14 @@ def test_arrow_cache(vault):
 def test_to_pandas(vault):
     df = vault.dfs["Projekte"].to_pandas()
     assert "_record" in df.columns
-    assert len(df) == 2
+    assert len(df) == 3
 
 
 def test_to_polars(vault):
     pl = pytest.importorskip("polars")
     df = vault.dfs["Projekte"].to_polars()
     assert "_record" in df.columns
-    assert len(df) == 2
+    assert len(df) == 3
 
 
 def test_to_pandas_polars_same_shape(vault):
@@ -210,14 +221,14 @@ def test_view_column_selection(vault):
 def test_view_filter_applied(vault):
     """View with a filter returns only matching rows."""
     tbl = vault.dfs["Projekte"].views["Projekte"].to_arrow()
-    assert tbl.num_rows == 2
+    assert tbl.num_rows == 3
 
 
 def test_view_sort_applied(vault):
-    """View with sort:DESC on Titel returns Beta before Alpha."""
+    """View with sort:DESC on Titel returns Gamma, Beta, Alpha."""
     tbl = vault.dfs["Projekte"].views["Projekte"].to_arrow()
     records = tbl.column("_record").to_pylist()
-    assert records == ["Beta", "Alpha"]
+    assert records == ["Gamma", "Beta", "Alpha"]
 
 
 # ── to_parquet (TableAccessor) ─────────────────────────────────────────────
@@ -294,7 +305,7 @@ def test_dfs_to_arrow_returns_dict(vault):
 def test_dfs_to_arrow_contains_records(vault):
     tables = vault.dfs.to_arrow()
     records = tables["Projekte"].column("_record").to_pylist()
-    assert set(records) == {"Alpha", "Beta"}
+    assert set(records) == {"Alpha", "Beta", "Gamma"}
 
 
 # ── DfsAccessor.to_parquet ────────────────────────────────────────────────

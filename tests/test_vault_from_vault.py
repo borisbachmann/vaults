@@ -26,7 +26,7 @@ def test_records_keys_match_schema(vault):
 
 
 def test_record_count(vault):
-    assert len(vault.records["Projekte"]) == 2
+    assert len(vault.records["Projekte"]) == 3
     assert len(vault.records["Personen"]) == 2
 
 
@@ -36,7 +36,7 @@ def test_record_is_record_instance(vault):
 
 def test_record_name(vault):
     names = {r.name for r in vault.records["Projekte"]}
-    assert names == {"Alpha", "Beta"}
+    assert names == {"Alpha", "Beta", "Gamma"}
 
 
 def test_record_type_property(vault):

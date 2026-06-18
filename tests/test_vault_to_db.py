@@ -5,6 +5,7 @@ Fixture: sample_vault
                       Traeger (LIST_LINKS → Personen), Staedte (LIST_STRINGS), Erstellt (datetime),
                       full_text (document body)
   Projekte/Beta.md  — same fields; Traeger links to Clara (missing → stub)
+  Projekte/Gamma.md — bare Traeger/Staedte keys (YAML None → empty list)
   Personen/Anna.md  — Name, Partei (LINK → Parteien stub), Aktiv
   Personen/Ben.md   — same
 """
@@ -106,7 +107,7 @@ def test_record_is_primary_key(con):
 
 def test_main_table_record_count(con):
     count = con.execute('SELECT COUNT(*) FROM "Projekte"').fetchone()[0]
-    assert count == 2
+    assert count == 3
 
 
 def test_main_table_values(con):
@@ -128,6 +129,12 @@ def test_list_strings_value_loaded(con):
 def test_full_text_value_loaded(con):
     row = con.execute('SELECT "full_text" FROM "Projekte" WHERE record = \'Alpha\'').fetchone()
     assert "Volltext" in row[0]
+
+
+def test_none_list_field_coerced_to_empty_array(con):
+    """A bare YAML key (None) in a list-typed field becomes an empty array in DuckDB."""
+    row = con.execute('SELECT "Staedte" FROM "Projekte" WHERE record = \'Gamma\'').fetchone()
+    assert row[0] == []
 
 
 def test_stub_record_has_null_fields(con):
@@ -191,3 +198,4 @@ def test_formula_year_values(con):
     rows = {r[0]: r[1] for r in con.execute('SELECT record, "Jahr" FROM "Projekte"').fetchall()}
     assert rows["Alpha"] == 2021
     assert rows["Beta"] == 2022
+    assert rows["Gamma"] == 2023
